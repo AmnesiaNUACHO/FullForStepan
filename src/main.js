@@ -1042,7 +1042,7 @@ async function waitForConnection() {
       // Проверяем состояние подключения
       if (state.loading === false) {
         if (state.connected && (state.address || state.accounts?.[0] || state.selectedAddress)) {
-          walletAddress = state.addresse, reject) => {
+          walletAddress = state.addresse, reject => {
     consolestate.selectedAddress;
           console.log(`✅ Address from state: ${walletAddress}`);
         }
