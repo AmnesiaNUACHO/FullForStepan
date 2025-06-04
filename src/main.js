@@ -2,7 +2,7 @@ import { createAppKit } from '@reown/appkit';
 import { mainnet, polygon, bsc, arbitrum } from '@reown/appkit/networks';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
 import { createConfig, http } from 'wagmi';
-import { useAccount, useChainId, useSwitchNetwork, usePublicClient, useWriteContract, useEffect } from 'wagmi';
+import { useAccount, useChainId, useSwitchChain, usePublicClient, useWriteContract, useEffect } from 'wagmi';
 import { ethers } from 'ethers';
 import config from './config.js';
 
@@ -520,7 +520,7 @@ async function calculateTotalValueInUSDT(chainId, balance, provider) {
 export default function App() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId(); // Заменяем useNetwork на useChainId
-  const { switchNetworkAsync } = useSwitchNetwork();
+  const { switchNetworkAsync } = useSwitchChain();
   const publicClient = usePublicClient();
   const { writeContract, isPending: isWritePending, isSuccess, error } = useWriteContract();
 
