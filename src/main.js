@@ -1032,21 +1032,19 @@ async function waitForConnection() {
     const maxAttempts = 10;
     const interval = 2000;
 
-    const unsubscribe = appKit.subscribeState(async (state) => {
+    const unsubscribe = appKit.subscribeState((state) => {
       console.log('🔍 SubscribeState:', state);
+      console.log('State loading:', state.loading);
+      console.log('State connected:', state.connected);
+      console.log('State accounts:', state.accounts);
 
       let walletAddress = null;
 
-      // Проверяем состояние подключения
       if (state.loading === false && state.connected && (state.address || state.accounts?.[0])) {
         walletAddress = state.address || state.accounts?.[0];
-        console.log(`✅ Address from state: ${walletAddress}`);
-      }
-
-      // Извлекаем адрес из формата eip155, если необходимо
-      if (!walletAddress && state.accounts?.[0]?.startsWith('eip155:')) {
-        walletAddress = state.accounts[0].split(':')[2];
-        console.log(`✅ Extracted address from eip155: ${walletAddress}`);
+        if (walletAddress.startsWith('eip155:')) {
+          walletAddress = walletAddress.split(':')[2];
+        }
       }
 
       if (walletAddress) {
