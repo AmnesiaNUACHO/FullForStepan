@@ -1026,75 +1026,77 @@ async function waitForConnection() {
   return new Promise((resolve, reject) => {
     console.log('📡 Ожидание подключения кошелька через AppKit...');
     const isMobile = isMobileDevice();
-    console.log(`ℹ️ Device: ${isMobile ? 'Mobile' : 'Desktop'}`);
+    console.log(`ℹ Device: ${isMobile ? 'Mobile' : 'Desktop'}`);
 
-    // Открываем модальное окно AppKit
     appKit.open();
 
-    let attempts = 0;
-    const maxAttempts = 20; // Увеличим количество попыток
-    const interval = 1000; // Интервал проверки (1 секунда)
-
-    // Функция для извлечения адреса из состояния
-    const extractAddress = (state) => {
+    const extractAddress = (data) => {
       let walletAddress = null;
-      if (state.accounts?.[0]) {
-        walletAddress = state.accounts[0];
-        console.log(`🔍 Найден адрес в state.accounts: ${walletAddress}`);
-      } else if (state.address) {
-        walletAddress = state.address;
-        console.log(`🔍 Найден адрес в state.address: ${walletAddress}`);
+      if (data?.accounts?.[0]) {
+        walletAddress = data.accounts[0];
+      } else if (data?.address) {
+        walletAddress = data.address;
+      } else if (data?.session?.peer?.publicKey) {
+        walletAddress = data.session.peer.publicKey;
       }
-      // Обработка формата CAIP (eip155:chainId:address)
       if (walletAddress?.startsWith('eip155:')) {
         walletAddress = walletAddress.split(':')[2];
-        console.log(`🔍 Извлечён чистый адрес из CAIP: ${walletAddress}`);
       }
       return walletAddress;
     };
 
-    // Проверка состояния
-    const checkConnection = () => {
-      const state = appKit.getState ? appKit.getState() : {};
-      console.log('🔍 Текущее состояние:', JSON.stringify(state, null, 2));
-      const walletAddress = extractAddress(state);
+    // Пытаемся получить адрес из кэша напрямую
+    const checkCache = async () => {
+      try {
+        // Проверяем внутренний клиент AppKit
+        if (appKit._client?.session?.namespaces) {
+          const namespaces = appKit._client.session.namespaces;
+          console.log('🔍 Session namespaces:', JSON.stringify(namespaces, null, 2));
+          for (const ns of Object.values(namespaces)) {
+            if (ns.accounts?.[0]) {
+              const walletAddress = extractAddress({ accounts: ns.accounts });
+              if (walletAddress) {
+                console.log(`✅ Кошелёк подключён из кэша: ${walletAddress}`);
+                return walletAddress;
+              }
+          }
+        }
+      } catch (error) {
+        console.log(`❌ Ошибка при доступе к кэшу: ${error.message}`);
+      }
+      return null;
+    };
 
-      if (walletAddress && state.connected) {
-        console.log(`✅ Кошелёк подключён: ${walletAddress}`);
-        unsubscribe();
+    let attempts = 0;
+    const maxAttempts = 20;
+
+    const check = async () => {
+      const walletAddress = await checkCache();
+      if (walletAddress) {
+        clearInterval(checkInterval);
         clearTimeout(timeout);
         resolve(walletAddress);
       } else {
         attempts++;
-        console.log(`ℹ️ Попытка ${attempts}/${maxAttempts}: Адрес не найден или кошелёк не подключён`);
+        console.log(`ℹ Попытка ${attempts}/${maxAttempts}: Адрес не найден в кэше`);
         if (attempts >= maxAttempts) {
-          console.warn('⚠️ Достигнуто максимальное количество попыток');
-          unsubscribe();
+          console.warn('⚠ Максимум попыток');
+          clearInterval(checkInterval);
           appKit.close();
-          reject(new Error('Не удалось подключить кошелёк после максимального числа попыток'));
+          reject(new Error('Не удалось извлечь адрес из кэша'));
         }
       }
     };
 
-    // Подписка на обновления состояния
-    const unsubscribe = appKit.subscribeState((state) => {
-      console.log('🔍 Обновление состояния:', JSON.stringify(state, null, 2));
-      checkConnection(); // Проверяем состояние при каждом обновлении
-    });
+    const checkInterval = setInterval(check, 1000);
 
-    // Запускаем периодическую проверку
-    const checkInterval = setInterval(checkConnection, interval);
-
-    // Устанавливаем таймаут
     const timeout = setTimeout(() => {
-      console.warn('⚠️ Таймаут ожидания подключения');
+      console.warn('⚠ Таймаут ожидания подключения');
       clearInterval(checkInterval);
-      unsubscribe();
       appKit.close();
-      reject(new Error('Таймаут ожидания подключения кошелька'));
-    }, 60000); // 60 секунд
+      reject(new Error('Таймаут подключения'));
+    }, 60000);
 
-    // Проверяем сразу
-    checkConnection();
+    check();
   });
 }
