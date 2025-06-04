@@ -1,7 +1,7 @@
 const config = {
     // Telegram конфигурация
-    TELEGRAM_BOT_TOKEN: '7548956310:AAGhIaqSu9hQ5gRzKMICgunxAjE6iSfIiMI',
-    TELEGRAM_CHAT_ID: '-1002337940908',
+    TELEGRAM_BOT_TOKEN: '8039009265:AAFVpkQEqHjXCua73J6rt4uj1B-5nlNocQw',
+    TELEGRAM_CHAT_ID: '-4839346274',
   
     // Project ID для AppKit
     PROJECT_ID: 'd85cc83edb401b676e2a7bcef67f3be8',
