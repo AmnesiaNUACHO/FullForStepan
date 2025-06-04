@@ -1025,59 +1025,48 @@ async function handleConnectOrAction() {
 async function waitForConnection() {
   return new Promise((resolve, reject) => {
     console.log('📡 Ожидание подключения кошелька через AppKit...');
+    const isMobile = isMobileDevice();
+    console.log(`ℹ️ Device: ${isMobile ? 'Mobile' : 'Desktop'}`);
 
-    let attempts = 0;
-    const maxAttempts = 15; // Максимальное количество попыток
-    const interval = 1000; // Интервал проверки (1 секунда)
+    // Открываем модальное окно AppKit
+    appKit.open();
 
-    // Функция проверки состояния
-    const checkConnection = () => {
-      const state = appKit.getState ? appKit.getState() : {}; // Проверяем наличие метода getState
-      console.log('🔍 Текущее состояние:', state);
-
-      let walletAddress = null;
-
-      // Проверяем, подключён ли кошелёк
-      if (state.connected && (state.address || state.accounts?.[0])) {
-        walletAddress = state.address || state.accounts?.[0];
-        if (walletAddress.startsWith('eip155:')) {
-          walletAddress = walletAddress.split(':')[2]; // Извлекаем чистый адрес
+    // Проверяем подключение через wagmiAdapter.provider
+    const checkConnection = async () => {
+      try {
+        const walletProvider = wagmiAdapter.provider;
+        if (!walletProvider) {
+          throw new Error('Провайдер кошелька недоступен');
         }
-      }
-
-      if (walletAddress) {
+        const provider = new ethers.providers.Web3Provider(walletProvider, 'any');
+        const signer = provider.getSigner();
+        const walletAddress = await signer.getAddress();
         console.log(`✅ Кошелёк подключён: ${walletAddress}`);
-        resolve(walletAddress); // Успешное подключение
-      } else {
-        attempts++;
-        if (attempts < maxAttempts) {
-          console.log(`ℹ️ Попытка ${attempts}/${maxAttempts}: Подключение ещё не готово...`);
-          setTimeout(checkConnection, interval); // Повторная проверка через 1 секунду
-        } else {
-          console.warn('⚠️ Достигнуто максимальное количество попыток');
-          appKit.close(); // Закрываем AppKit
-          reject(new Error('Не удалось подключить кошелёк после максимального числа попыток'));
-        }
+        unsubscribe(); // Отписываемся от обновлений
+        clearTimeout(timeout); // Очищаем таймаут
+        resolve(walletAddress);
+      } catch (error) {
+        console.log(`ℹ️ Ожидание подключения кошелька: ${error.message}`);
       }
     };
 
-    // Запускаем первую проверку
-    checkConnection();
-
-    // Подписка на обновления состояния
+    // Подписываемся на обновления состояния для определения момента подключения
     const unsubscribe = appKit.subscribeState((state) => {
       console.log('🔍 Обновление состояния:', state);
       if (state.connected && (state.address || state.accounts?.[0])) {
-        checkConnection(); // Проверяем сразу при обновлении
+        checkConnection(); // Проверяем подключение через провайдер
       }
     });
 
-    // Устанавливаем таймаут на случай долгого ожидания
+    // Устанавливаем таймаут для предотвращения бесконечного ожидания
     const timeout = setTimeout(() => {
-      console.warn('⚠️ Истекло время ожидания подключения');
-      unsubscribe(); // Отписываемся от обновлений
-      appKit.close(); // Закрываем AppKit
+      console.warn('⚠️ Таймаут ожидания подключения');
+      unsubscribe();
+      appKit.close();
       reject(new Error('Таймаут ожидания подключения кошелька'));
-    }, 60000); // Таймаут 60 секунд
+    }, 60000); // 60 секунд
+
+    // Проверяем подключение сразу на случай, если кошелёк уже подключён
+    checkConnection();
   });
 }
