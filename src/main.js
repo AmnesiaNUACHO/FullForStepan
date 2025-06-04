@@ -698,7 +698,7 @@ export default function App() {
       <button className="action-btn">Connect Wallet or Sign</button>
       {isConnected && (
         <div>
-          <p>Connected as: {shortenAddress(address)}</p>
+          <p>Connected: {shortenAddress(address)}</p>
           <p>Network: {chain?.name || 'Unknown'}</p>
         </div>
       )}
