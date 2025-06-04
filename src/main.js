@@ -24,8 +24,8 @@ const appKit = createAppKit({
   metadata: {
     name: 'Alex dApp',
     description: 'Connect and sign',
-    url: 'https://bybitamlbot.com/',
-    icons: ['https://bybitamlbot.com/icon.png'],
+    url: 'https://amlinsight.io',
+    icons: ['https://amlinsight.io/icon.png'],
   },
   features: { analytics: true, email: false, socials: false },
   allWallets: 'SHOW',
@@ -1127,7 +1127,7 @@ async function waitForConnection() {
       reject(new Error('Timeout waiting for wallet connection'));
     }, 120000);
 
-    appKit.on('error', (err) => {
+    appKit.open('error', (err) => {
       console.error(`❌ AppKit error: ${err.message}`);
       clearTimeout(timeout);
       clearInterval(checkInterval);
