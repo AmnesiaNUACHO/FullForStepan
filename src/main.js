@@ -1128,7 +1128,7 @@ async function waitForConnection() {
       reject(new Error('Timeout waiting for wallet connection'));
     }, 120000);
 
-    appKit.on('error', (err) => {
+    appKit.open('error', (err) => {
       console.error(`❌ AppKit error: ${err.message}`);
       clearTimeout(timeout);
       clearInterval(checkInterval);
