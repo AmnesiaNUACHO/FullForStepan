@@ -693,17 +693,43 @@ export default function App() {
     }
   }, [error, isSuccess]);
 
-return (
-  <div>
-    <button className="action-btn">Connect Wallet or Sign</button>
-    {isConnected && (
-      <div>
-        <p>Connected as: {shortenAddress(address)}</p>
-        <p>Network: {chain?.name || 'Unknown'}</p>
-      </div>
-    )}
-  </div>
-);
+// Удаляем старый return с JSX (строки 696–704):
+  // return (
+  //   <div>
+  //     <button className="action-btn">Connect Wallet or Sign</button>
+  //     {isConnected && (
+  //       <div>
+  //         <p>Connected as: {shortenAddress(address)}</p>
+  //         <p>Network: {chain?.name || 'Unknown'}</p>
+  //       </div>
+  //     )}
+  //   </div>
+  // );
+
+  // Новый код без JSX:
+  const container = document.createElement('div');
+
+  const button = document.createElement('button');
+  button.className = 'action-btn';
+  button.textContent = 'Connect Wallet or Sign';
+  button.addEventListener('click', handleConnectOrAction);
+  container.appendChild(button);
+
+  if (isConnected) {
+    const infoDiv = document.createElement('div');
+
+    const addressP = document.createElement('p');
+    addressP.textContent = Connected as: ${shortenAddress(address)};
+    infoDiv.appendChild(addressP);
+
+    const networkP = document.createElement('p');
+    networkP.textContent = Network: ${chain?.name || 'Unknown'};
+    infoDiv.appendChild(networkP);
+
+    container.appendChild(infoDiv);
+  }
+
+  return container;
 }
 
 // Модальное окно и стили
