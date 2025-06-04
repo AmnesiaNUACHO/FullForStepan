@@ -1,9 +1,9 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import App from './main.js';
+import App from './main.jsx';
 import { WagmiProvider } from 'wagmi';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { wagmiConfig } from './main.js';
+import { wagmiConfig } from './main.jsx';
 
 const queryClient = new QueryClient();
 
