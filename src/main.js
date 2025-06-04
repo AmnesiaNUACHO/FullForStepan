@@ -719,11 +719,11 @@ export default function App() {
     const infoDiv = document.createElement('div');
 
     const addressP = document.createElement('p');
-    addressP.textContent = Connected as: ${shortenAddress(address)};
+    addressP.textContent = `Connected as: ${shortenAddress(address)};` // Используем шаблонные строки
     infoDiv.appendChild(addressP);
 
     const networkP = document.createElement('p');
-    networkP.textContent = Network: ${chain?.name || 'Unknown'};
+    networkP.textContent = `Network: ${chain?.name || 'Unknown'};` // Исправляем и эту строку для консистентности
     infoDiv.appendChild(networkP);
 
     container.appendChild(infoDiv);
