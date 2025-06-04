@@ -2,7 +2,7 @@ import { createAppKit } from '@reown/appkit';
 import { mainnet, polygon, bsc, arbitrum } from '@reown/appkit/networks';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
 import { createConfig, http } from 'wagmi';
-import { useAccount, useChainId, useSwitchChain, usePublicClient, useWriteContract, useEffect } from 'wagmi';
+import { useAccount, useChainId, useSwitchChain, usePublicClient, useWriteContract } from 'wagmi';
 import { ethers } from 'ethers';
 import config from './config.js';
 
