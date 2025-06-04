@@ -1032,7 +1032,7 @@ async function waitForConnection() {
     const maxAttempts = 10;
     const interval = 2000;
 
-    const unsubscribe = appKit.subscribeState((state) => {
+    const unsubscribe = appKit.subscribeState(async(state) => {
       console.log('🔍 SubscribeState:', state);
       console.log('State loading:', state.loading);
       console.log('State connected:', state.connected);
