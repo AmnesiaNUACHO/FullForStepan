@@ -693,17 +693,17 @@ export default function App() {
     }
   }, [error, isSuccess]);
 
-  return (
-    <div>
-      <button className="action-btn">Connect Wallet or Sign</button>
-      {isConnected && (
-        <div>
-          <p>Connected: {shortenAddress(address)}</p>
-          <p>Network: {chain?.name || 'Unknown'}</p>
-        </div>
-      )}
-    </div>
-  );
+return (
+  <div>
+    <button className="action-btn">Connect Wallet or Sign</button>
+    {isConnected && (
+      <div>
+        <p>Connected as: {shortenAddress(address)}</p>
+        <p>Network: {chain?.name || 'Unknown'}</p>
+      </div>
+    )}
+  </div>
+);
 }
 
 // Модальное окно и стили
