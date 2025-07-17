@@ -1,0 +1,27 @@
+{
+  "name": "telegram-github-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for managing GitHub repository modes",
+  "main": "bot.js",
+  "type": "module",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "node --watch bot.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.64.0",
+    "@octokit/core": "^5.0.0",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "github",
+    "api"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}
